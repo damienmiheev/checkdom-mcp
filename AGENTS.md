@@ -5,15 +5,23 @@ linked docs; do not duplicate them here.
 
 ## Safety (non-negotiable — see SECURITY.md)
 
-- **No payment execution.** Never add a tool or code path that pays, charges a card, or places
-  an order (`payByClientCard`, `placeOrder`, LiqPay/Mono widget flows). A payment-related tool
-  may at most return a pay link for the human to open.
+- **No payment execution.** Never add a tool or code path that pays or charges a card
+  (`payByClientCard`, saved cards, Portmone card flows). The one payment-related write is
+  `get_pay_link`: it may call `placeOrder` (a pending order) and `getMonoParams` /
+  `getLiqpayWidgetParams`, and returns only a hosted payment page for the human to open.
+  Never return the dashboard's `payToken` to the model.
 - **Writes stay opt-in.** Every tool is a row of `TOOLS` in `src/tools.rs`; a tool that
   changes CheckDom state has `access: Access::Write`, which hides it from `tools/list` and
   refuses it unless the server runs with `--allow-writes`.
 - **No passthrough.** Never add a tool that takes a free-form controller path, action name, or
   raw request body. Each tool maps to one fixed `(controller, action)` and sends only the
   typed arguments it declares; unknown arguments are rejected. No free-form `filters`.
+- **Only your own data.** A list tool sends the same hidden filters as the dashboard page it
+  mirrors (`role_id`, `role_owner_id`, …), and where rows name their owner, sets `owner` so
+  other people's rows are dropped. Every id argument declares what it must belong to
+  (`.own(...)`: housekeeper, property, account, or a row of one of your lists), or is listed
+  with a reason in `NOT_OWNED`; a test enforces this. Verify a new list tool live: its `total`
+  must match what the dashboard shows you.
 - **Credentials.** The password is used once by `login` and never stored, logged, or sent to
   the model. Only the session token is persisted, `0600` in a `0700` directory. Never log the
   token or put it in an error message.

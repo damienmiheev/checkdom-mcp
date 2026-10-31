@@ -9,6 +9,7 @@ use crate::error::{CheckDomError, Result};
 use reqwest::header::{HeaderMap, SET_COOKIE};
 use reqwest::{Client, Url};
 use serde_json::{Value, json};
+use std::sync::Mutex;
 use std::time::Duration;
 
 const BASE: &str = "https://checkdom.in.ua";
@@ -17,6 +18,12 @@ const HOST: &str = "checkdom.in.ua";
 /// that posts to `/login` is not how the site logs in.
 const LOGIN_RPC: &str = "/modules/front/api/loginController.php";
 const MAX_REDIRECTS: usize = 5;
+/// The dashboard page; it embeds the logged-in user's id (`curUser.id = '…'`).
+const DASHBOARD_PATH: &str = "/dash/";
+
+/// The user id behind a session token, so the dashboard page is fetched once per
+/// token rather than once per tool call.
+static USER_ID_CACHE: Mutex<Option<(String, i64)>> = Mutex::new(None);
 const USER_AGENT: &str = concat!("checkdom-mcp/", env!("CARGO_PKG_VERSION"));
 /// Upper bound for one whole request, so a stalled server can't hang a tool call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -101,6 +108,43 @@ impl CheckDomClient {
         let text = resp.text().await?;
         parse_rpc_response(status, &text)
             .map_err(|e| e.with_context(&format!("{path} (action {action})")))
+    }
+
+    /// The id of the logged-in user, which many actions take as `user_id` or
+    /// `role_owner_id`. Read from the dashboard page and cached per token.
+    pub async fn user_id(&self) -> Result<i64> {
+        let token = self.token.as_deref().ok_or(CheckDomError::NotLoggedIn)?;
+        if let Ok(cache) = USER_ID_CACHE.lock()
+            && let Some((cached_token, id)) = cache.as_ref()
+            && cached_token == token
+        {
+            return Ok(*id);
+        }
+
+        let resp = self
+            .http
+            .get(format!("{BASE}{DASHBOARD_PATH}"))
+            .header(reqwest::header::COOKIE, format!("session={token}"))
+            .send()
+            .await?;
+        // Without a valid session the dashboard redirects to the landing page.
+        if !resp.url().path().starts_with(DASHBOARD_PATH) {
+            return Err(CheckDomError::SessionExpired);
+        }
+        let status = resp.status();
+        let html = resp.text().await?;
+        if !status.is_success() {
+            return Err(CheckDomError::Unexpected(format!(
+                "HTTP {status} from {DASHBOARD_PATH}"
+            )));
+        }
+        let id = parse_user_id(&html).ok_or_else(|| {
+            CheckDomError::Unexpected("could not find your user id on the dashboard page".into())
+        })?;
+        if let Ok(mut cache) = USER_ID_CACHE.lock() {
+            *cache = Some((token.to_string(), id));
+        }
+        Ok(id)
     }
 
     /// Cheap authenticated call to tell a valid session from an expired one.
@@ -189,6 +233,16 @@ fn parse_rpc_response(status: reqwest::StatusCode, body: &str) -> Result<Value> 
     }
 }
 
+/// The user id from the dashboard page's inline `curUser.id = '1234'`.
+fn parse_user_id(html: &str) -> Option<i64> {
+    html.match_indices("curUser.id").find_map(|(at, needle)| {
+        let rest = html[at + needle.len()..].trim_start().strip_prefix('=')?;
+        let rest = rest.trim_start().trim_start_matches(['\'', '"']);
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok().filter(|id| *id > 0)
+    })
+}
+
 /// The value of the `session` cookie set by a response, if any. A cleared
 /// cookie (`session=deleted` or empty) does not count.
 fn session_from_set_cookie(headers: &HeaderMap) -> Option<String> {
@@ -228,6 +282,21 @@ mod tests {
         cleared.append(SET_COOKIE, HeaderValue::from_static("session=; path=/"));
         assert_eq!(session_from_set_cookie(&cleared), None);
         assert_eq!(session_from_set_cookie(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn user_id_is_read_from_the_dashboard_page() {
+        let page = "<script>\nvar curUser = {}\ncurUser.id = '4321'\ncurUser.name = 'A'\n</script>";
+        assert_eq!(parse_user_id(page), Some(4321));
+        assert_eq!(parse_user_id(r#"curUser.id="77";"#), Some(77));
+        // Comparisons and empty values elsewhere in the page are not assignments.
+        assert_eq!(
+            parse_user_id("if (x == curUser.id) {}\ncurUser.id = '9'"),
+            Some(9)
+        );
+        assert_eq!(parse_user_id("curUser.id = ''"), None);
+        assert_eq!(parse_user_id("curUser.id = '0'"), None);
+        assert_eq!(parse_user_id("<html>landing page</html>"), None);
     }
 
     #[test]

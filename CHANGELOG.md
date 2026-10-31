@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- 33 more read tools, all checked against a real account: balance, properties, amount to pay,
+  debt radar, reporting charts (settlements, cash flow), bank accounts, services, invoices,
+  payments and payment codes, support request lookups (recipients, categories,
+  sub-categories, properties, visit slots), inbox and archive, unread count, service messages,
+  news, poll invitations and polls, passes, access keys, cars, documents and statements.
+- Write tools: `read_message`, `close_support_request`, `vote`, `cancel_temporary_pass`,
+  `create_statement`, and `get_pay_link` (a LiqPay or monobank page for you to pay on;
+  nothing is charged by the tool).
 - Initial MCP server over stdio for the CheckDom resident dashboard.
 - One-time interactive auth: `login`, `logout`, `status`; session token stored `0600` in the
   user config dir (password never stored).
@@ -24,6 +32,10 @@ All notable changes to this project are documented here. The format is based on
 - CodeQL workflow (Rust and Actions); AGENTS.md / CLAUDE.md agent rules and project skills.
 
 ### Changed
+- Tables send the dashboard's exact shape (`filters` inside `pagination`, `additionalData`).
+- Your user id is read from the dashboard page once per session and filled in by the server.
+- `list_houses` is replaced by `list_properties`; the dashboard's internal `payToken` is
+  removed from every response.
 - CI skips the build only when every changed file is documentation (any other file, including
   new kinds, runs everything); a README-only change runs just the README test; scheduled and
   manual runs check everything. The `CI result` / `CodeQL result` gate jobs are the required
@@ -43,10 +55,23 @@ All notable changes to this project are documented here. The format is based on
   UTF-8 and lines over 1 MiB get an error instead of stopping the server.
 
 ### Fixed
+- `get_debt_status` and `list_messages` failed with HTTP 500; `list_houses` (now
+  `list_properties`) returned nothing. Requests now match the dashboard's own.
+- List tools send the same filters as the dashboard pages; support request rows are also
+  checked against your user id.
+- `create_support_request` and `comment_on_support_request` now send the dashboard's exact
+  fields (string `property_id`, `files`, `user_id`, …).
 - Login uses the dashboard's `userLogin` RPC (verified live). Posting the HTML login form
   never worked: `POST /login` is 301-redirected and loses its body.
 
 ### Security
+- Every id argument is checked against your own data before the request is sent; read and
+  write tools refuse other people's buildings, properties, accounts, invoices, requests,
+  passes, cars, polls and messages.
+- `get_pay_link` accepts only monobank's or LiqPay's own payment pages, and amounts in whole
+  kopecks from 0.01 UAH.
+- Irreversible writes (`vote`, `close_support_request`, `cancel_temporary_pass`) carry the MCP
+  `destructiveHint`.
 - Redirects are followed only to checkdom.in.ua, so a 307/308 can't replay the password.
 - The token file is written atomically and never through a symlink.
 - Tool arguments can no longer override the RPC `action` (they were merged after it).

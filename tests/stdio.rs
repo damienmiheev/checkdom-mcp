@@ -141,20 +141,21 @@ fn handshake_and_read_only_tool_list() {
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
 
     let names = tool_names(&replies[1]);
-    assert_eq!(names.len(), 8);
+    assert_eq!(names.len(), 41);
     assert!(!names.iter().any(|n| n == "create_support_request"));
-    assert!(!names.iter().any(|n| n.to_lowercase().contains("pay")));
+    // The pay-link tool is a write: never offered without --allow-writes.
+    assert!(!names.iter().any(|n| n == "get_pay_link"));
 }
 
 #[test]
-fn allow_writes_adds_exactly_the_two_write_tools() {
+fn allow_writes_adds_the_write_tools() {
     let replies = serve(
         "writes",
         &["--allow-writes"],
         &[json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})],
     );
     let names = tool_names(&replies[0]);
-    assert_eq!(names.len(), 10);
+    assert_eq!(names.len(), 49);
     assert!(names.iter().any(|n| n == "create_support_request"));
     assert!(names.iter().any(|n| n == "comment_on_support_request"));
 }
