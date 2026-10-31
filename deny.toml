@@ -4,6 +4,16 @@
 
 [graph]
 all-features = true
+# The platforms we build and ship (RELEASE.md); dependencies only used on
+# others (e.g. Android's jni via rustls-platform-verifier) are out of scope.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
 
 [advisories]
 # RustSec advisories; vulnerable, unmaintained and yanked crates fail the check.
