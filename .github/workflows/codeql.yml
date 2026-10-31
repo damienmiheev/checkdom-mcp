@@ -6,6 +6,8 @@ on:
   pull_request:
   schedule:
     - cron: "41 5 * * 1"
+  # Manual run: analyses everything.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,8 +20,9 @@ defaults:
   run:
     shell: bash
 
-# Each language is analysed only when its files changed (scheduled runs analyse
-# both); "CodeQL result" is the required check.
+# Rust is analysed unless every changed file is documentation or under .github/;
+# workflows when anything under .github/ changed. Scheduled and manual runs
+# analyse both. "CodeQL result" is the required check.
 jobs:
   changes:
     name: Changed files
@@ -32,22 +35,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # A pull request's merge commit and its first parent (the base).
+          fetch-depth: 2
       - id: filter
         env:
           EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: >-
           .github/scripts/changes.sh
-          'rust=^(src/|tests/|Cargo\.(toml|lock)$|\.github/workflows/codeql\.yml$)'
+          'code!=^(docs/|[^/]+\.md$|LICENSE-(MIT|APACHE)$|\.claude/|\.github/)'
+          'setup=^\.github/(workflows/codeql\.yml|scripts/changes\.sh)$'
           'actions=^\.github/'
       - id: languages
         env:
-          RUST: ${{ steps.filter.outputs.rust }}
+          CODE: ${{ steps.filter.outputs.code }}
+          SETUP: ${{ steps.filter.outputs.setup }}
           ACTIONS: ${{ steps.filter.outputs.actions }}
         run: |
           langs=()
-          [[ "$RUST" == true ]] && langs+=(rust)
+          [[ "$CODE" == true || "$SETUP" == true ]] && langs+=(rust)
           [[ "$ACTIONS" == true ]] && langs+=(actions)
           echo "languages=$(jq -cn '$ARGS.positional' --args "${langs[@]}")" | tee -a "$GITHUB_OUTPUT"
 

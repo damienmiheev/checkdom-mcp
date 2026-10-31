@@ -24,6 +24,10 @@ All notable changes to this project are documented here. The format is based on
 - CodeQL workflow (Rust and Actions); AGENTS.md / CLAUDE.md agent rules and project skills.
 
 ### Changed
+- CI skips the build only when every changed file is documentation (any other file, including
+  new kinds, runs everything); a README-only change runs just the README test; scheduled and
+  manual runs check everything. The `CI result` / `CodeQL result` gate jobs are the required
+  checks.
 - Toolchain 1.99.1, edition 2024, `rust-version = "1.99"`; dependencies updated.
 - `Cargo.lock` is committed and CI builds with `--locked`; `cargo deny` is a required check.
 - MCP: invalid JSON gets a `-32700` parse error, non-object or method-less messages get
@@ -41,9 +45,6 @@ All notable changes to this project are documented here. The format is based on
 ### Fixed
 - Login uses the dashboard's `userLogin` RPC (verified live). Posting the HTML login form
   never worked: `POST /login` is 301-redirected and loses its body.
-
-- CI and CodeQL run each job only when files it checks changed; docs-only changes skip the
-  build, and the `CI result` / `CodeQL result` gate jobs are the required checks.
 
 ### Security
 - Redirects are followed only to checkdom.in.ua, so a 307/308 can't replay the password.
