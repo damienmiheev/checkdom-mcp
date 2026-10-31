@@ -157,10 +157,11 @@ service itself are not this project's to disclose.
 
 ## Contributing
 
-Issues and PRs welcome; `main` is protected and changes land through pull requests. CI runs
-`cargo fmt`, `cargo clippy -D warnings`, unit and end-to-end tests and a release build on
-Linux, macOS and Windows, plus `cargo deny` and CodeQL. Please keep the tool surface typed and least-privilege, add tests
-with every change, and never add a tool that completes a payment or stores a password.
+Issues and PRs welcome; `main` is protected and changes land through pull requests. For
+code changes, CI runs `cargo fmt`, `cargo clippy -D warnings`, unit and end-to-end tests and
+a release build on Linux, macOS and Windows, plus `cargo deny` and CodeQL; docs-only changes
+skip the build. Please keep the tool surface typed and least-privilege, add tests with every
+change, and never add a tool that completes a payment or stores a password.
 Rules for AI coding agents are in [AGENTS.md](AGENTS.md).
 
 ## License

@@ -58,10 +58,12 @@ checkdom-mcp is a local tool that acts as *you* against *your own* CheckDom acco
   and workflows run with read-only `contents` permission. Dependabot proposes grouped updates
   weekly (Cargo and Actions), which CI re-checks.
 - `Cargo.lock` is committed and CI builds with `--locked`.
-- `cargo deny check` audits advisories, licenses, bans and sources. It is a required check on
-  every push and pull request and also runs weekly, so a new RustSec advisory surfaces without
-  a code change.
-- CodeQL scans the Rust code and the workflows on every push, pull request and weekly.
+- `cargo deny check` audits advisories, licenses, bans and sources whenever dependencies or
+  its config change, and weekly, so a new RustSec advisory surfaces without a code change.
+- CodeQL scans the Rust code and the workflows whenever they change, and weekly.
+- CI checks only what a change touches (a docs-only change runs no build), but a run with
+  nothing reliable to compare against checks everything. The required checks are the
+  `CI result` and `CodeQL result` gate jobs, which fail if any job that ran failed.
 - GitHub secret scanning with push protection, Dependabot alerts and security updates are on.
 - `main` is protected by a ruleset: changes land through pull requests with passing CI, and
   force-pushes and branch deletion are blocked.

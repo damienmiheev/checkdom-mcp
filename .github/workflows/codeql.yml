@@ -14,9 +14,47 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+defaults:
+  run:
+    shell: bash
+
+# Each language is analysed only when its files changed (scheduled runs analyse
+# both); "CodeQL result" is the required check.
 jobs:
+  changes:
+    name: Changed files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      languages: ${{ steps.languages.outputs.languages }}
+    steps:
+      # Third-party actions are pinned to commit SHAs (SECURITY.md § Supply chain).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: >-
+          .github/scripts/changes.sh
+          'rust=^(src/|tests/|Cargo\.(toml|lock)$|\.github/workflows/codeql\.yml$)'
+          'actions=^\.github/'
+      - id: languages
+        env:
+          RUST: ${{ steps.filter.outputs.rust }}
+          ACTIONS: ${{ steps.filter.outputs.actions }}
+        run: |
+          langs=()
+          [[ "$RUST" == true ]] && langs+=(rust)
+          [[ "$ACTIONS" == true ]] && langs+=(actions)
+          echo "languages=$(jq -cn '$ARGS.positional' --args "${langs[@]}")" | tee -a "$GITHUB_OUTPUT"
+
   analyze:
     name: CodeQL (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.languages != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -26,9 +64,8 @@ jobs:
       fail-fast: false
       matrix:
         # `actions` scans the workflows themselves (injection, unpinned actions, permissions).
-        language: [rust, actions]
+        language: ${{ fromJSON(needs.changes.outputs.languages) }}
     steps:
-      # Third-party actions are pinned to commit SHAs (SECURITY.md § Supply chain).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -40,3 +77,14 @@ jobs:
       - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:${{ matrix.language }}
+
+  result:
+    name: CodeQL result
+    needs: [changes, analyze]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if a job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

@@ -42,6 +42,9 @@ All notable changes to this project are documented here. The format is based on
 - Login uses the dashboard's `userLogin` RPC (verified live). Posting the HTML login form
   never worked: `POST /login` is 301-redirected and loses its body.
 
+- CI and CodeQL run each job only when files it checks changed; docs-only changes skip the
+  build, and the `CI result` / `CodeQL result` gate jobs are the required checks.
+
 ### Security
 - Redirects are followed only to checkdom.in.ua, so a 307/308 can't replay the password.
 - The token file is written atomically and never through a symlink.

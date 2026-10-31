@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Weekly run so a fresh advisory against a released dependency surfaces
+  # Weekly cargo deny: a new advisory against a released dependency shows up
   # without a code change.
   schedule:
     - cron: "17 6 * * 1"
@@ -26,10 +26,37 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
 
+# Jobs run only when files they check changed; "CI result" is the one required
+# check and passes when every job that ran passed (skipped jobs are fine).
 jobs:
+  changes:
+    name: Changed files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      readme: ${{ steps.filter.outputs.readme }}
+      deps: ${{ steps.filter.outputs.deps }}
+    steps:
+      # Third-party actions are pinned to commit SHAs (SECURITY.md § Supply chain).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: >-
+          .github/scripts/changes.sh
+          'rust=^(src/|tests/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|clippy\.toml$|\.github/workflows/ci\.yml$|\.github/scripts/)'
+          'readme=^README\.md$'
+          'deps=^(Cargo\.(toml|lock)$|deny\.toml$|\.github/workflows/ci\.yml$|\.github/scripts/)'
+
   check:
     name: fmt, clippy, test (${{ matrix.os }})
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +64,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      # Third-party actions are pinned to commit SHAs (SECURITY.md § Supply chain).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -52,9 +78,33 @@ jobs:
       - run: cargo test --all-features --locked
       - run: cargo build --release --locked
 
-  # Supply-chain audit: advisories, licenses, bans, sources. A required check.
+  # The README's tool tables are tested against the server, so a README-only
+  # change still runs that one test (on one OS, not the full matrix).
+  readme:
+    name: README matches the server
+    needs: changes
+    if: >-
+      github.event_name != 'schedule'
+      && needs.changes.outputs.rust != 'true'
+      && needs.changes.outputs.readme == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
+      - run: cargo test --all-features --locked --test stdio readme_tool_tables_match_the_server
+
+  # Supply-chain audit: advisories, licenses, bans, sources.
   deny:
     name: cargo deny
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -64,3 +114,19 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
+
+  result:
+    name: CI result
+    needs: [changes, check, readme, deny]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if a job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - name: Summary
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
