@@ -29,8 +29,14 @@ own login**.
 
 ## Status
 
-Early **v0.1**. Core read tools and the two support-request write flows are implemented. The
-API surface is mapped in [`docs/API.md`](docs/API.md); more tools are easy to add.
+Early **v0.1**, not yet released: build from source (below). Runs on macOS, Linux and
+Windows; CI builds and tests all three.
+
+Checked against a real account on 2026-10-31: `login`, `status`, `list_housekeepers`,
+`list_invoices`, `list_support_requests`, `get_support_request_comments` and `list_votings`
+work. Known issues, being fixed next: `get_debt_status` and `list_messages` fail with an HTTP
+500 (wrong parameters), and `list_houses` returns an empty list. The write tools have not been
+tried against a real account yet. The API surface is mapped in [`docs/API.md`](docs/API.md).
 
 ## Install
 
@@ -41,8 +47,11 @@ Requires a [Rust toolchain](https://rustup.rs); `rustup` installs the pinned ver
 git clone https://github.com/damienmiheev/checkdom-mcp
 cd checkdom-mcp
 cargo build --release --locked
-# binary at ./target/release/checkdom-mcp
 ```
+
+The binary is `target/release/checkdom-mcp` (`target\release\checkdom-mcp.exe` on Windows).
+Copy it anywhere you like; the examples below call it `checkdom-mcp`.
+`checkdom-mcp --help` lists the commands and `checkdom-mcp --version` prints the version.
 
 ## Log in (once)
 
@@ -51,10 +60,12 @@ model or the MCP protocol:
 
 ```bash
 checkdom-mcp login
-# prompts for your CIF-or-email and password, performs the dashboard login,
-# checks the new session works, and stores ONLY the resulting session token
-# locally (0600, in your config dir)
+# prompts for your CIF-or-email and password (the same ones you use on
+# checkdom.in.ua), logs in, checks the new session works, and stores ONLY
+# the resulting session token locally
 ```
+
+When the session expires, tools answer "session expired; run `checkdom-mcp login` again".
 
 - `checkdom-mcp logout` removes the stored token.
 - `checkdom-mcp status` shows whether a valid session is stored.
@@ -72,8 +83,17 @@ never stored.
 
 ## Connect it to Claude
 
-Add the server to your MCP client config. For Claude Desktop
-(`claude_desktop_config.json`):
+Log in first (above); the server uses the stored session.
+
+**Claude Code:**
+
+```bash
+claude mcp add checkdom -- /absolute/path/to/checkdom-mcp serve
+```
+
+**Claude Desktop:** add the server to `claude_desktop_config.json`
+(macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`) and restart
+Claude Desktop:
 
 ```json
 {
@@ -85,6 +105,11 @@ Add the server to your MCP client config. For Claude Desktop
   }
 }
 ```
+
+On Windows, use the `.exe` path with doubled backslashes, e.g.
+`"C:\\Users\\you\\bin\\checkdom-mcp.exe"`.
+
+Other MCP clients: run `checkdom-mcp serve` as a stdio server.
 
 To allow the write tools (file / comment on support requests), add the opt-in flag:
 
@@ -122,8 +147,7 @@ MCP annotations (`readOnlyHint`), so clients can ask for stricter approval on wr
 > Messages and request comments are written by other people, and the model reads them next to
 > your private data. With `--allow-writes`, a crafted message could try to make the model post
 > that data in a comment. Keep per-call approval on for write tools in your MCP client, and
-> read what the model is about to send. `create_support_request` accepts only the documented
-`saveSupportRequest` fields and rejects anything else.
+> read what the model is about to send.
 
 ## Security
 
@@ -134,8 +158,8 @@ service itself are not this project's to disclose.
 ## Contributing
 
 Issues and PRs welcome; `main` is protected and changes land through pull requests. CI runs
-`cargo fmt`, `cargo clippy -D warnings`, unit and end-to-end tests, a release build,
-`cargo deny`, and CodeQL. Please keep the tool surface typed and least-privilege, add tests
+`cargo fmt`, `cargo clippy -D warnings`, unit and end-to-end tests and a release build on
+Linux, macOS and Windows, plus `cargo deny` and CodeQL. Please keep the tool surface typed and least-privilege, add tests
 with every change, and never add a tool that completes a payment or stores a password.
 Rules for AI coding agents are in [AGENTS.md](AGENTS.md).
 

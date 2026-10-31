@@ -10,4 +10,5 @@
 - [ ] No passthrough of free-form actions, paths, or request bodies
 - [ ] No token, password, or raw HTTP body in logs or errors
 - [ ] New dependency justified (why, size, maintenance, license) — or none added
+- [ ] README.md, SECURITY.md and docs/API.md re-read and updated where this changes anything
 - [ ] CHANGELOG.md updated for user-visible changes
