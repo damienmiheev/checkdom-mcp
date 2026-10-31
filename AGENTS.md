@@ -65,10 +65,10 @@ cargo deny check
 
 Report actual results. If a check fails or was skipped, say so.
 
-CI runs each job only when files it checks changed (`.github/scripts/changes.sh`, patterns in
-`ci.yml` / `codeql.yml`). When you add a file that affects the build, tests, dependencies or
-analysis outside the existing patterns (e.g. `build.rs`, a new top-level config), add it to
-the patterns in the same PR, or CI will skip it.
+CI skips the build only when every changed file matches the documentation pattern in
+`ci.yml` / `codeql.yml` (`.github/scripts/changes.sh`); any other file runs everything, so new
+kinds of files are checked by default. Only widen that pattern for files that truly can't
+affect the build or tests — and never for anything a test reads (README.md has its own job).
 
 ## Where things are
 

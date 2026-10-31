@@ -61,9 +61,10 @@ checkdom-mcp is a local tool that acts as *you* against *your own* CheckDom acco
 - `cargo deny check` audits advisories, licenses, bans and sources whenever dependencies or
   its config change, and weekly, so a new RustSec advisory surfaces without a code change.
 - CodeQL scans the Rust code and the workflows whenever they change, and weekly.
-- CI checks only what a change touches (a docs-only change runs no build), but a run with
-  nothing reliable to compare against checks everything. The required checks are the
-  `CI result` and `CodeQL result` gate jobs, which fail if any job that ran failed.
+- CI skips the build only when every changed file is documentation (renames count both
+  paths; any other or unknown kind of file runs everything), and scheduled, manual and
+  force-pushed runs check everything. The required checks are the `CI result` and
+  `CodeQL result` gate jobs, which fail if any job that ran failed or was cancelled.
 - GitHub secret scanning with push protection, Dependabot alerts and security updates are on.
 - `main` is protected by a ruleset: changes land through pull requests with passing CI, and
   force-pushes and branch deletion are blocked.
