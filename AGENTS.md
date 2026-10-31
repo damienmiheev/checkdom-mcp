@@ -93,3 +93,4 @@ affect the build or tests — and never for anything a test reads (README.md has
 | Token storage | src/config.rs |
 | End-to-end tests of the binary | tests/stdio.rs |
 | Release notes | CHANGELOG.md |
+| How a release is built, signed and published | RELEASE.md, `.github/workflows/{tag-release,release-build,release-sign}.yml` |

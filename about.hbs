@@ -1,0 +1,19 @@
+Third-party software notices for checkdom-mcp
+
+checkdom-mcp is dual-licensed under Apache-2.0 or MIT (LICENSE-APACHE, LICENSE-MIT).
+It is built from the following open-source crates, used under these licences:
+
+{{#each overview}}
+  {{{name}}} ({{count}} crates)
+{{/each}}
+{{#each licenses}}
+
+------------------------------------------------------------------------------
+{{{name}}} ({{id}})
+Used by:
+{{#each used_by}}
+  - {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+{{{text}}}
+{{/each}}
