@@ -1,7 +1,9 @@
 # Prepares a release: run it by hand (Actions → Prepare release → Run
 # workflow, also from the GitHub app) and pick patch, minor or major. It bumps
 # the version in Cargo.toml / Cargo.lock, turns the CHANGELOG's [Unreleased]
-# section into the new version's section, and opens the release pull request.
+# section into the new version's section, pushes the release-<version> branch
+# and opens the release pull request. If the repository doesn't let GitHub
+# Actions create pull requests, the run summary has a one-click link to open it.
 # Merging that PR releases: once CI passes on main, Tag release tags it and the
 # build, signing (after the owner's approval) and publishing follow (RELEASE.md).
 name: Prepare release
@@ -45,19 +47,28 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
         run: |
+          old=$(scripts/release-info.sh version)
+          if ! git ls-remote --exit-code --tags origin "refs/tags/v$old" >/dev/null; then
+            echo "::error::v$old was never released; merge or finish that release first"
+            exit 1
+          fi
           version=$(python3 -I scripts/prepare-release.py "$BUMP" --notes "$RUNNER_TEMP/notes.md")
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::error::v$version exists already"
+            exit 1
+          fi
+          branch="release-$version"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "::error::branch $branch exists already; delete it (and close its pull request) first"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "branch=release-$version" >> "$GITHUB_OUTPUT"
-      - name: Open the pull request
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - name: Push the release branch
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.bump.outputs.version }}
           BRANCH: ${{ steps.bump.outputs.branch }}
         run: |
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
-            echo "::error::$BRANCH exists already; merge or close its pull request first"
-            exit 1
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
@@ -65,20 +76,39 @@ jobs:
           git push -q origin "$BRANCH"
           {
             echo "Releases **v$VERSION**. Merge it once CI is green: Tag release then tags it,"
-            echo "the build runs, and signing waits for the owner's approval before the release"
-            echo "is published (RELEASE.md)."
+            echo "the build runs, and signing waits for the owner's approval; approving signs"
+            echo "and publishes the release (RELEASE.md)."
             echo
             echo "## Release notes"
             echo
             cat "$RUNNER_TEMP/notes.md"
           } > "$RUNNER_TEMP/body.md"
-          gh pr create --base main --head "$BRANCH" --title "Release v$VERSION" --body-file "$RUNNER_TEMP/body.md"
-      # A pull request opened with the workflow token starts no workflow; a
-      # dispatch does, and its checks report on the PR's commit.
-      - name: Start CI and CodeQL on the pull request
+      - name: Open the pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
           BRANCH: ${{ steps.bump.outputs.branch }}
         run: |
-          gh workflow run ci.yml --ref "$BRANCH"
-          gh workflow run codeql.yml --ref "$BRANCH"
+          if gh pr create --base main --head "$BRANCH" --title "Release v$VERSION" \
+              --body-file "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/pr-url" 2> "$RUNNER_TEMP/pr-error"; then
+            echo "### Release v$VERSION: $(cat "$RUNNER_TEMP/pr-url")" >> "$GITHUB_STEP_SUMMARY"
+            # A pull request opened with the workflow token starts no workflow;
+            # a dispatch does, and its checks report on the PR's commit.
+            gh workflow run ci.yml --ref "$BRANCH"
+            gh workflow run codeql.yml --ref "$BRANCH"
+          else
+            # GitHub Actions may not be allowed to create pull requests here
+            # (Settings → Actions → General). The owner opens it in one click.
+            cat "$RUNNER_TEMP/pr-error"
+            title=$(python3 -I -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "Release v$VERSION")
+            {
+              echo "### Release v$VERSION is ready: [create the release pull request]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH?quick_pull=1&title=$title)"
+              echo
+              echo "Paste this as its description:"
+              echo
+              echo '````markdown'
+              cat "$RUNNER_TEMP/body.md"
+              echo '````'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Open the release pull request from the link in this run's summary."
+          fi

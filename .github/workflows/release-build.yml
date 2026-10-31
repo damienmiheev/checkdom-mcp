@@ -3,8 +3,8 @@
 # and SHA256SUMS over the archives. For a tag it also attests the build
 # provenance of every archive, creates a draft GitHub release with them and the
 # CHANGELOG section, then starts Release sign, which waits for the owner's
-# approval. It never signs or publishes itself: the owner publishes the draft
-# (RELEASE.md). Run by hand on a branch, or on a pull request that changes the
+# approval and then signs and publishes it (RELEASE.md). It never signs or
+# publishes itself. Run by hand on a branch, or on a pull request that changes the
 # release machinery, it only builds (a dry run).
 name: Release build
 
@@ -242,7 +242,12 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          awk -v v="## $VERSION " 'index($0, v) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          # The section ends at the next "## " heading outside a code block.
+          awk -v v="## $VERSION " '
+            index($0, v) == 1 { on = 1; next }
+            on && /^```/ { fenced = !fenced }
+            on && !fenced && /^## / { exit }
+            on' CHANGELOG.md > notes.md
           [ -s notes.md ] || { echo "::error::no CHANGELOG section for $VERSION"; exit 1; }
           key=$(scripts/release-info.sh signing-key)
           cat >> notes.md <<NOTES

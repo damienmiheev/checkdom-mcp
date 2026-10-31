@@ -1,10 +1,10 @@
-# Tags a release. It runs by itself when CI passes on a push to main: if the
-# version in Cargo.toml at that commit has no tag yet (a merged release pull
-# request from Prepare release), it tags the commit as v<version> and starts the
-# Release build; otherwise it does nothing. It can also be run by hand on main.
-# Signing needs the owner's approval (RELEASE.md). The tag is made by GitHub
-# Actions, so it isn't GPG-signed; what users check is SHA256SUMS.minisig and
-# the build provenance attestations.
+# Tags a release. It runs by itself when CI passes on a push to main: if that
+# commit changed the version in Cargo.toml (a merged release pull request from
+# Prepare release) and the new version has no tag yet, it tags the commit as
+# v<version> and starts the Release build; otherwise it does nothing. It can
+# also be run by hand on main to tag main's head. Signing needs the owner's
+# approval (RELEASE.md). The tag is made by GitHub Actions, so it isn't
+# GPG-signed; what users check is SHA256SUMS.minisig and the build provenance.
 name: Tag release
 
 on:
@@ -17,8 +17,9 @@ on:
 permissions:
   contents: read
 
+# One run per commit, never cancelled: a burst of merges can't drop a release.
 concurrency:
-  group: tag-release
+  group: tag-release-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: false
 
 defaults:
@@ -28,13 +29,15 @@ defaults:
 jobs:
   tag:
     name: Tag and start the Release build
-    # By hand on main, or after a successful CI run for a push to main (not a
-    # pull request, schedule or manual CI run).
+    # By hand on main, or after a successful CI run for a push to this
+    # repository's main (not a pull request, schedule or manual CI run).
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || (github.event_name == 'workflow_run'
           && github.event.workflow_run.event == 'push'
-          && github.event.workflow_run.conclusion == 'success')
+          && github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.head_branch == 'main'
+          && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -46,29 +49,37 @@ jobs:
       MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
       # Third-party actions are pinned to commit SHAs (SECURITY.md § Supply chain).
-      # Credentials are kept: this job pushes the tag.
+      # Checks out main (this workflow's own code); the commit is only read with
+      # `git show`. Credentials are kept: this job pushes the tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.COMMIT }}
+          ref: main
+          fetch-depth: 0
       - name: Check
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           [[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unexpected commit '$COMMIT'"; exit 1; }
-          version=$(scripts/release-info.sh version)
+          git merge-base --is-ancestor "$COMMIT" HEAD || { echo "::error::$COMMIT is not on main"; exit 1; }
+          version=$(scripts/release-info.sh version "$COMMIT")
           tag="v$version"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            if [[ $MANUAL == true ]]; then
-              echo "::error::$tag exists already; run Prepare release to bump the version"
-              exit 1
+          if [[ $MANUAL != true ]]; then
+            # Only the commit that changed the version releases it.
+            previous=$(scripts/release-info.sh version "$COMMIT^1" 2>/dev/null || echo none)
+            if [[ $previous == "$version" ]]; then
+              echo "The version ($version) didn't change in this commit: nothing to release."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-            echo "$tag exists already: nothing to release."
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
-          grep -q "^## $version " CHANGELOG.md || { echo "::error::no CHANGELOG section '## $version (date)'"; exit 1; }
-          scripts/release-info.sh signing-key > /dev/null
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::error::$tag exists already"
+            exit 1
+          fi
+          git show "$COMMIT:CHANGELOG.md" | grep -q "^## $version " ||
+            { echo "::error::no CHANGELOG section '## $version (date)' at $COMMIT"; exit 1; }
+          scripts/release-info.sh signing-key "$COMMIT" > /dev/null
           if [[ $MANUAL == true ]]; then
             ci=$(gh run list --workflow ci.yml --commit "$COMMIT" --event push --json conclusion --jq '.[0].conclusion // empty')
             [ "$ci" = success ] || { echo "::error::CI on main's head ($COMMIT) is '${ci:-not finished}'; wait for it to pass"; exit 1; }

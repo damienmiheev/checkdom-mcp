@@ -7,8 +7,9 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Changed
-- Releases take three clicks: *Prepare release* opens the version and CHANGELOG pull request,
-  merging it tags and builds the release automatically, and approving the signing publishes it.
+- Releases are mostly automatic: *Prepare release* bumps the version and cuts the CHANGELOG
+  for a release pull request, merging it tags and builds the release, and approving the signing
+  publishes it.
 
 ## 0.1.0 (2026-10-31)
 

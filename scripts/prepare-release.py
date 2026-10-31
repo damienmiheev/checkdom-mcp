@@ -6,7 +6,8 @@ Usage: scripts/prepare-release.py patch|minor|major [--date YYYY-MM-DD] [--notes
 Updates Cargo.toml ([package] version), Cargo.lock (this package's entry) and CHANGELOG.md
 (a new "## X.Y.Z (date)" section holding what was under "## [Unreleased]", which is left
 empty above it), prints the new version, and writes the release notes to FILE if given.
-Fails if [Unreleased] has no entries. The Prepare release workflow runs it (RELEASE.md).
+Fails if [Unreleased] has no entries. Dates are UTC (the runner's clock). The Prepare release
+workflow runs it (RELEASE.md).
 Standard library only.
 """
 
@@ -48,11 +49,18 @@ def package_version(cargo_toml):
 
 
 def set_package_version(cargo_toml, old, new):
-    head, sep, rest = cargo_toml.partition("[package]\n")
-    rest, n = re.subn(rf'^version\s*=\s*"{re.escape(old)}"', f'version = "{new}"', rest, count=1, flags=re.M)
-    if not sep or n != 1:
+    m = re.search(r"^\[package\]\n", cargo_toml, re.M)
+    if not m:
+        raise ReleaseError("no [package] table in Cargo.toml")
+    head, rest = cargo_toml[: m.end()], cargo_toml[m.end() :]
+    section_end = re.search(r"^\[", rest, re.M)
+    end = section_end.start() if section_end else len(rest)
+    section, n = re.subn(
+        rf'^version\s*=\s*"{re.escape(old)}"', f'version = "{new}"', rest[:end], count=1, flags=re.M
+    )
+    if n != 1:
         raise ReleaseError("could not update the version in Cargo.toml")
-    return head + sep + rest
+    return head + section + rest[end:]
 
 
 def set_lock_version(cargo_lock, old, new):
@@ -63,6 +71,22 @@ def set_lock_version(cargo_lock, old, new):
     return out
 
 
+def next_heading(text):
+    """Offset of the first "## " heading outside a fenced code block, or None."""
+    fenced = False
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("## "):
+            return offset
+        offset += len(line)
+    return None
+
+
+LINK_DEFINITIONS = re.compile(r"(?:\n\[[^\]\n]+\]:[^\n]*)+\s*\Z")
+
+
 def cut_changelog(changelog, version, date):
     """Move the [Unreleased] entries under a new version heading. Returns (changelog, notes)."""
     if UNRELEASED not in changelog:
@@ -70,16 +94,20 @@ def cut_changelog(changelog, version, date):
     if f"\n## {version} " in changelog:
         raise ReleaseError(f"CHANGELOG.md already has a section for {version}")
     head, _, rest = changelog.partition(UNRELEASED)
-    m = re.search(r"^## ", rest, re.M)
-    body, tail = (rest[: m.start()], rest[m.start() :]) if m else (rest, "")
+    at = next_heading(rest)
+    body, tail = (rest[:at], rest[at:]) if at is not None else (rest, "")
+    # Link definitions at the end of the file belong to the file, not the notes.
+    links = LINK_DEFINITIONS.search(body) if at is None else None
+    if links:
+        body, tail = body[: links.start()], body[links.start() :].lstrip("\n")
     notes = body.strip("\n")
-    if not re.search(r"^\s*- \S", notes, re.M):
+    if not re.search(r"^\s*[-*] \S", notes, re.M):
         raise ReleaseError("the [Unreleased] section of CHANGELOG.md has no entries")
     new = f"{head}{UNRELEASED}\n\n## {version} ({date})\n\n{notes}\n\n{tail}"
     return new.rstrip("\n") + "\n", notes + "\n"
 
 
-def main(argv):
+def main(argv, root=ROOT):
     if not argv or argv[0] not in ("patch", "minor", "major"):
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
@@ -97,14 +125,14 @@ def main(argv):
             print(f"unknown argument {flag}", file=sys.stderr)
             return 2
     try:
-        cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+        cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
         old = package_version(cargo)
         new = bump(old, part)
-        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
-        changelog, notes = cut_changelog((ROOT / "CHANGELOG.md").read_text(encoding="utf-8"), new, date)
-        (ROOT / "Cargo.toml").write_text(set_package_version(cargo, old, new), encoding="utf-8")
-        (ROOT / "Cargo.lock").write_text(set_lock_version(lock, old, new), encoding="utf-8")
-        (ROOT / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+        lock = (root / "Cargo.lock").read_text(encoding="utf-8")
+        changelog, notes = cut_changelog((root / "CHANGELOG.md").read_text(encoding="utf-8"), new, date)
+        (root / "Cargo.toml").write_text(set_package_version(cargo, old, new), encoding="utf-8")
+        (root / "Cargo.lock").write_text(set_lock_version(lock, old, new), encoding="utf-8")
+        (root / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
     except ReleaseError as e:
         print(f"prepare-release: {e}", file=sys.stderr)
         return 1
