@@ -188,6 +188,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn config_dir_on_windows_is_appdata() {
+        assert_eq!(
+            config_dir(env(&[
+                ("APPDATA", r"C:\Users\a\AppData\Roaming"),
+                ("HOME", r"C:\x")
+            ])),
+            Some(PathBuf::from(r"C:\Users\a\AppData\Roaming"))
+        );
+        assert_eq!(config_dir(env(&[("APPDATA", "relative")])), None);
+        assert_eq!(config_dir(env(&[])), None);
+    }
+
+    #[test]
     #[cfg(unix)]
     fn config_dir_needs_an_absolute_home() {
         assert_eq!(config_dir(env(&[])), None);
