@@ -3,15 +3,16 @@
 #
 # `check` has no secrets. It ties everything to the tag's Release build run:
 # the tag is on main and names the Cargo version, the run built that commit,
-# and the draft's archives match the run's SHA256SUMS. Its summary shows the
-# checksums the owner is about to approve.
+# the draft holds exactly the six archives and SHA256SUMS, and its SHA256SUMS is
+# the run's. Its summary shows the title, checksums and notes the owner is
+# about to approve; approving signs and publishes.
 #
 # `sign` then waits for the owner's approval in the protected `release`
 # environment, which holds the minisign key (only runs from main may use it).
 # It runs no repository code and no third-party action: GitHub's
 # download-artifact, then minisign. It signs SHA256SUMS, checks the signature
 # against minisign.pub at the tag, and uploads SHA256SUMS.minisig to the draft.
-# It publishes nothing: the owner presses Publish afterwards.
+# Once the signature is uploaded, it publishes the release.
 name: Release sign
 run-name: Sign ${{ inputs.tag }}
 
@@ -91,24 +92,42 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          version=${TAG#v}
           out=$RUNNER_TEMP/release
-          mkdir -p "$out"
+          mkdir -p "$out/draft"
           # Artifacts can't change after upload, so the run's SHA256SUMS ties
           # the draft's archives to this build.
           gh run download "$RUN" -n SHA256SUMS -D "$out"
-          gh release download "$TAG" -D "$out" -p '*.tar.gz' -p '*.zip'
-          (cd "$out" && sha256sum --check --strict SHA256SUMS)
-          files=("$out"/*.tar.gz "$out"/*.zip)
-          [ "${#files[@]}" = "$(wc -l < "$out/SHA256SUMS")" ] ||
-            { echo "::error::the draft has archives that the run's SHA256SUMS doesn't list"; exit 1; }
+          # The draft must hold exactly the six archives and SHA256SUMS: approving
+          # publishes it, so nothing else may ride along.
+          expected=$(for t in aarch64-apple-darwin.tar.gz x86_64-apple-darwin.tar.gz \
+            aarch64-unknown-linux-gnu.tar.gz x86_64-unknown-linux-gnu.tar.gz \
+            aarch64-pc-windows-msvc.zip x86_64-pc-windows-msvc.zip; do
+            echo "checkdom-mcp-$version-$t"; done; echo SHA256SUMS)
+          actual=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          [ "$(sort <<<"$expected")" = "$(sort <<<"$actual")" ] ||
+            { echo "::error::the draft's files are not exactly the release's:"; echo "$actual"; exit 1; }
+          gh release download "$TAG" -D "$out/draft"
+          cmp "$out/SHA256SUMS" "$out/draft/SHA256SUMS" ||
+            { echo "::error::the draft's SHA256SUMS differs from the build's"; exit 1; }
+          (cd "$out/draft" && sha256sum --check --strict SHA256SUMS)
           mkdir "$RUNNER_TEMP/to-sign"
           cp "$out/SHA256SUMS" "$RUNNER_TEMP/to-sign/"
           {
-            echo "### $TAG at \`$COMMIT\`, Release build [$RUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN)"
-            echo "Approving the \`sign\` job signs these checksums:"
+            echo "### Approving signs **and publishes** $TAG"
+            echo
+            echo "Commit \`$COMMIT\`, Release build [$RUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN)."
+            echo "Title: **$(gh release view "$TAG" --json name --jq .name)**"
+            echo
+            echo "Checksums:"
             echo '```'
             cat "$out/SHA256SUMS"
             echo '```'
+            echo "<details><summary>Release notes</summary>"
+            echo
+            gh release view "$TAG" --json body --jq .body
+            echo
+            echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -152,13 +171,14 @@ jobs:
           rm -rf "$keys"
           # The signature must check against minisign.pub at the tag.
           minisign -Vm SHA256SUMS -P "$PUBLIC_KEY"
-      - name: Upload to the draft
+      - name: Upload the signature and publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd "$RUNNER_TEMP/release"
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber SHA256SUMS.minisig
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           {
-            echo "### $TAG signed"
-            echo "Check the draft, then publish: $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
+            echo "### $TAG signed and published"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url
           } >> "$GITHUB_STEP_SUMMARY"
