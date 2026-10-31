@@ -18,6 +18,9 @@ checked against your own data before the request is sent.
 > any time. Use it with your own account, at your own risk. No warranty. See
 > [LICENSE-APACHE](LICENSE-APACHE) / [LICENSE-MIT](LICENSE-MIT).
 
+**New here?** [GETTING_STARTED.md](GETTING_STARTED.md) walks you (or your AI assistant) through
+download, login and connecting a client, with a setup prompt you can copy.
+
 ## Design goals
 
 - **Local-first.** Runs on your machine over stdio. Your credentials and session token never
