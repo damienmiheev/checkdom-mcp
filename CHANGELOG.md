@@ -54,3 +54,5 @@ All notable changes to this project are documented here. The format is based on
 - The token file is created `0600` (directory `0700`) instead of being chmod-ed after writing.
 - HTTPS-only client with connect and request timeouts; `per_page` capped at 100.
 - `login` verifies the new session before storing it.
+
+<!-- path-filter test, not for merge -->
