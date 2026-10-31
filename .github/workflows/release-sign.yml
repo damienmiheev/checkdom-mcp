@@ -11,7 +11,7 @@
 # It runs no repository code and no third-party action: GitHub's
 # download-artifact, then minisign. It signs SHA256SUMS, checks the signature
 # against minisign.pub at the tag, and uploads SHA256SUMS.minisig to the draft.
-# It publishes nothing: the owner presses Publish afterwards.
+# Once the signature is uploaded, it publishes the release.
 name: Release sign
 run-name: Sign ${{ inputs.tag }}
 
@@ -152,13 +152,14 @@ jobs:
           rm -rf "$keys"
           # The signature must check against minisign.pub at the tag.
           minisign -Vm SHA256SUMS -P "$PUBLIC_KEY"
-      - name: Upload to the draft
+      - name: Upload the signature and publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd "$RUNNER_TEMP/release"
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber SHA256SUMS.minisig
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           {
-            echo "### $TAG signed"
-            echo "Check the draft, then publish: $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
+            echo "### $TAG signed and published"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url
           } >> "$GITHUB_STEP_SUMMARY"

@@ -61,24 +61,31 @@ gh attestation verify checkdom-mcp-<version>-<target>.tar.gz --repo damienmiheev
 
 ## Releasing
 
-1. **Prepare** (pull request): set `version` in `Cargo.toml` (then `cargo check` so
-   `Cargo.lock` follows), and rename the CHANGELOG's `## [Unreleased]` section to
-   `## <version> (<YYYY-MM-DD>)`, with a fresh empty `## [Unreleased]` above it. Merge once CI
-   is green.
-2. **Tag:** Actions → *Tag release* → Run workflow on `main`. It checks that the tag is new,
-   the CHANGELOG section exists, `minisign.pub` has a key and CI passed on `main`'s head, then
-   tags `v<version>` and starts *Release build*.
-3. **Build:** *Release build* builds the six archives, the notices and SBOMs, writes
-   `SHA256SUMS`, attests provenance, creates the **draft** release with the CHANGELOG section
-   as notes, and starts *Release sign*.
-4. **Sign:** *Release sign* checks that the draft's files are exactly that build's, shows the
-   checksums in its summary, and waits. Review them, then **Approve** the `sign` job (works
-   from the GitHub mobile app). It signs `SHA256SUMS` and uploads `SHA256SUMS.minisig`.
-5. **Publish:** open the draft, check the notes and files, and press **Publish release**.
+Three clicks; everything else is automatic.
 
-A dry run of the build (no tag, no draft, no attestations): Actions → *Release build* → Run
-workflow on any branch.
+1. **Prepare:** Actions → *Prepare release* → Run workflow → pick `patch`, `minor` or `major`
+   (also from the GitHub mobile app). It bumps the version in `Cargo.toml` / `Cargo.lock`,
+   turns the CHANGELOG's `## [Unreleased]` section into `## <version> (<date>)`, opens the
+   **Release v<version>** pull request with those notes, and starts its CI. It refuses when
+   `[Unreleased]` has no entries, so keep the CHANGELOG up to date as changes land.
+2. **Merge** the release pull request once its checks are green.
+3. **Approve:** when CI has passed on `main`, *Tag release* tags `v<version>` by itself and
+   starts *Release build*, which builds the six archives, the notices and SBOMs, writes
+   `SHA256SUMS`, attests provenance, creates a draft release and starts *Release sign*. That
+   checks the draft's files are exactly that build's, shows the checksums in its summary, and
+   waits for you: open the run (GitHub also notifies you), click **Review deployments → release
+   → Approve and deploy**. It signs `SHA256SUMS`, uploads `SHA256SUMS.minisig` and **publishes**
+   the release.
+
+Why not fully automatic: a pull request merged with the workflow token would start no further
+workflows, so the merge stays a click; the approval is the security gate in front of the
+signing key.
+
+By hand, if needed: *Tag release* can be run on `main` (it tags main's head if its version is
+new), and *Release sign* can be run with a tag. A dry run of the build (no tag, no draft, no
+attestations): *Release build* → Run workflow on any branch; it also runs on pull requests that
+change the release machinery.
 
 If something fails before publishing, fix it, delete the draft and the tag (the `release tags`
-ruleset lets the owner do that), and start again from step 2. A published release is never
-changed: release a new patch version instead.
+ruleset lets the owner do that), and re-run *Tag release* on `main`. A published release is
+never changed: release a new patch version instead.
