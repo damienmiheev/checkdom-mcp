@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const BASE: &str = "https://checkdom.in.ua";
+const HOST: &str = "checkdom.in.ua";
+const MAX_REDIRECTS: usize = 5;
 const USER_AGENT: &str = concat!("checkdom-mcp/", env!("CARGO_PKG_VERSION"));
 /// Upper bound for one whole request, so a stalled server can't hang a tool call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -136,12 +138,27 @@ fn http_builder() -> reqwest::ClientBuilder {
     Client::builder()
         .user_agent(USER_AGENT)
         .https_only(true)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= MAX_REDIRECTS {
+                attempt.error("too many redirects")
+            } else if follows_redirect_to(attempt.url()) {
+                attempt.follow()
+            } else {
+                // A 307/308 would replay the login form, password included.
+                attempt.stop()
+            }
+        }))
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
 }
 
 fn build_http() -> Result<Client> {
     Ok(http_builder().build()?)
+}
+
+/// Redirects are followed only to CheckDom itself, over HTTPS.
+fn follows_redirect_to(url: &Url) -> bool {
+    url.scheme() == "https" && url.host_str() == Some(HOST) && url.port().is_none()
 }
 
 /// Build `{"data": {...params, "action", "langModule"}}`.
@@ -194,31 +211,30 @@ fn cookie_value(header: &str, name: &str) -> Option<String> {
     })
 }
 
-/// Extract the hidden `_csrf-landing` token from the login page HTML.
+/// Extract the hidden `_csrf-landing` token from the login page HTML: the
+/// `value` attribute of the tag that has `name="_csrf-landing"`, in either
+/// attribute order.
 fn extract_csrf(html: &str) -> Option<String> {
-    use regex::Regex;
-    use std::sync::OnceLock;
-    static RES: OnceLock<Vec<Regex>> = OnceLock::new();
-    #[expect(
-        clippy::expect_used,
-        reason = "constant patterns, compiled by the finds_csrf_token test"
-    )]
-    let res = RES.get_or_init(|| {
-        [
-            r#"name="_csrf-landing"[^>]*?value="([^"]*)""#,
-            r#"value="([^"]*)"[^>]*?name="_csrf-landing""#,
-        ]
-        .iter()
-        .map(|p| Regex::new(p).expect("valid regex"))
-        .collect()
-    });
-    res.iter()
-        .find_map(|re| {
-            re.captures(html)
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str().to_string())
+    html.match_indices(r#"name="_csrf-landing""#)
+        .find_map(|(at, _)| {
+            let start = html[..at].rfind('<')?;
+            let end = at + html[at..].find('>')?;
+            attr_value(&html[start..end], "value")
         })
-        .filter(|s| !s.is_empty())
+        .filter(|v| !v.is_empty())
+}
+
+/// The double-quoted value of attribute `name` inside one HTML tag.
+fn attr_value(tag: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    tag.match_indices(&needle).find_map(|(at, _)| {
+        // Must be a whole attribute name, not the tail of e.g. `data-value`.
+        if !tag[..at].ends_with(|c: char| c.is_ascii_whitespace()) {
+            return None;
+        }
+        let rest = &tag[at + needle.len()..];
+        rest.find('"').map(|len| rest[..len].to_string())
+    })
 }
 
 #[cfg(test)]
@@ -240,6 +256,24 @@ mod tests {
         let b = r#"<input value="ABC==" name="_csrf-landing">"#;
         assert_eq!(extract_csrf(b).as_deref(), Some("ABC=="));
         assert_eq!(extract_csrf("<p>no token here</p>"), None);
+    }
+
+    #[test]
+    fn csrf_ignores_other_tags_and_lookalike_attributes() {
+        let html = r#"<meta name="csrf-param" content="_csrf-landing">
+<meta name="csrf-token" content="META">
+<form><input type="hidden" data-value="WRONG"
+    name="_csrf-landing"
+    value="RIGHT=="></form>"#;
+        assert_eq!(extract_csrf(html).as_deref(), Some("RIGHT=="));
+        assert_eq!(
+            extract_csrf(r#"<input name="_csrf-landing" value="">"#),
+            None
+        );
+        assert_eq!(
+            extract_csrf(r#"<input name="_csrf-landing" value="unterminated>"#),
+            None
+        );
     }
 
     #[test]
@@ -280,6 +314,17 @@ mod tests {
             let err = parse_rpc_response(status, secret).unwrap_err().to_string();
             assert!(!err.contains("12345"), "{err}");
         }
+    }
+
+    #[test]
+    fn redirects_only_within_checkdom_over_https() {
+        let ok = |u: &str| follows_redirect_to(&Url::parse(u).unwrap());
+        assert!(ok("https://checkdom.in.ua/dash/"));
+        assert!(!ok("http://checkdom.in.ua/dash/"));
+        assert!(!ok("https://checkdom.in.ua:8443/"));
+        assert!(!ok("https://evil.example/login"));
+        assert!(!ok("https://checkdom.in.ua.evil.example/"));
+        assert!(!ok("https://be.checkdom.in.ua/api"));
     }
 
     #[test]

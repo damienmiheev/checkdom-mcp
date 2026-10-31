@@ -12,7 +12,7 @@ yanked = "deny"
 ignore = []
 
 [licenses]
-# Permissive licenses plus file-level-copyleft MPL-2.0 (SECURITY.md § Supply chain).
+# Permissive licenses only (SECURITY.md § Supply chain).
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -22,8 +22,6 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
-    # option-ext via dirs; file-level copyleft, used unmodified.
-    "MPL-2.0",
     "Unicode-3.0",
     "Zlib",
 ]
@@ -32,9 +30,11 @@ confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
 [bans]
-# Duplicates come from transitive dependencies (e.g. base64, syn); reported, not fatal.
+# Duplicates come from transitive dependencies; reported, not fatal.
 multiple-versions = "warn"
 wildcards = "deny"
+# TLS is rustls only (SECURITY.md § Supply chain): no OpenSSL linkage.
+deny = [{ name = "openssl" }, { name = "openssl-sys" }, { name = "native-tls" }]
 
 [sources]
 unknown-registry = "deny"

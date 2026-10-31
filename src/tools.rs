@@ -1,11 +1,14 @@
 //! MCP tool definitions and dispatch.
 //!
-//! Read tools are always available. Write tools are only listed and callable
-//! when the server is started with `--allow-writes`.
+//! Every tool is one row of [`TOOLS`]: a fixed controller path and action,
+//! whether it reads or writes, and its typed arguments. The tool list, the
+//! input schemas, the write gate and argument validation are all derived from
+//! that table, so they cannot drift apart. Read tools are always available;
+//! write tools are only listed and callable with `--allow-writes`.
 
 use crate::client::CheckDomClient;
 use crate::error::{CheckDomError, Result};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 // RPC controller paths (see docs/API.md).
 const IDX: &str = "/modules/private/api/apiIndexController.php";
@@ -18,385 +21,589 @@ const VOTE: &str = "/modules/voting/api/apiVotingController.php";
 
 /// Largest page a list tool asks for, so one call can't pull an unbounded result.
 const MAX_PER_PAGE: i64 = 100;
-/// `saveSupportRequest` accepts a description of 1–999 characters.
-const MAX_DESCRIPTION_CHARS: usize = 999;
+const DEFAULT_PER_PAGE: i64 = 25;
 
-/// Fields of `saveSupportRequest` (docs/API.md) that `create_support_request` passes
-/// through. Anything else is rejected, so the tool sends only what it documents.
-const SUPPORT_REQUEST_FIELDS: &[&str] = &[
-    "user_id",
-    "author_user_id",
-    "property_id",
-    "property_type",
-    "type",
-    "support_id",
-    "category",
-    "sub_category",
-    "description",
-    "status",
-    "user_full_name",
-    "request_entity_type",
-    "request_entity_id",
-    "subscriber_id",
-    "schedule",
+/// Whether a tool only reads, or changes state on CheckDom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Access {
+    Read,
+    Write,
+}
+
+/// The type of one tool argument, checked before any request is made.
+#[derive(Clone, Copy, Debug)]
+enum Ty {
+    /// A JSON integer (ids, enum codes). `-1` is a valid category id ("Інше").
+    Int,
+    /// A non-blank string of at most `max` characters.
+    Str { max: usize },
+    /// `{"start_datetime": str, "end_datetime": str}` or `null`.
+    TimeSlot,
+}
+
+#[derive(Debug)]
+struct Arg {
+    name: &'static str,
+    ty: Ty,
+    required: bool,
+    description: &'static str,
+}
+
+const fn req(name: &'static str, ty: Ty, description: &'static str) -> Arg {
+    Arg {
+        name,
+        ty,
+        required: true,
+        description,
+    }
+}
+
+const fn opt(name: &'static str, ty: Ty, description: &'static str) -> Arg {
+    Arg {
+        name,
+        ty,
+        required: false,
+        description,
+    }
+}
+
+/// How the request body is built from the validated arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    /// The arguments as they are.
+    Plain,
+    /// The arguments plus a `pagination` object built from `page` / `per_page`.
+    Paginated,
+}
+
+#[derive(Debug)]
+struct Tool {
+    name: &'static str,
+    description: &'static str,
+    access: Access,
+    path: &'static str,
+    action: &'static str,
+    shape: Shape,
+    args: &'static [Arg],
+    /// Constant fields the dashboard always sends with this action.
+    fixed: &'static [(&'static str, i64)],
+}
+
+const HK_ID: &str = "Housekeeper (building manager) id from list_housekeepers.";
+const ROLE_ID: &str = "Your active role id (from your CheckDom session).";
+const ROLE_OWNER_ID: &str = "The owner id of your active role, e.g. the housekeeper id.";
+
+/// Every tool this server offers. Adding a tool means adding a row here.
+const TOOLS: &[Tool] = &[
+    Tool {
+        name: "list_housekeepers",
+        description: "List your building managers (домоуправителі / ОСББ) and their ids. Many \
+                      other tools take an `hk_id` from here.",
+        access: Access::Read,
+        path: IDX,
+        action: "getUserHousekeepers",
+        shape: Shape::Plain,
+        args: &[],
+        fixed: &[],
+    },
+    Tool {
+        name: "list_houses",
+        description: "List your properties / houses registered on CheckDom.",
+        access: Access::Read,
+        path: PROP,
+        action: "getUserHouses",
+        shape: Shape::Plain,
+        args: &[],
+        fixed: &[],
+    },
+    Tool {
+        name: "get_debt_status",
+        description: "Get the balance / debt state (платіжний радар) for a building.",
+        access: Access::Read,
+        path: DEBT,
+        action: "getDebtStatus",
+        shape: Shape::Plain,
+        args: &[
+            req("hk_id", Ty::Int, HK_ID),
+            opt("house_id", Ty::Int, "Optional house filter."),
+            opt("section", Ty::Str { max: 64 }, "Optional section filter."),
+            opt("floor", Ty::Str { max: 64 }, "Optional floor filter."),
+        ],
+        fixed: &[],
+    },
+    Tool {
+        name: "list_invoices",
+        description: "List incoming invoices (рахунки), newest first.",
+        access: Access::Read,
+        path: INV,
+        action: "getIncomingInvoicesPagination",
+        shape: Shape::Paginated,
+        args: &[],
+        fixed: &[],
+    },
+    Tool {
+        name: "list_support_requests",
+        description: "List your support requests (заявки) with their status and SLA, newest first.",
+        access: Access::Read,
+        path: SUP,
+        action: "getSupportRequestsPagination",
+        shape: Shape::Paginated,
+        args: &[],
+        fixed: &[],
+    },
+    Tool {
+        name: "get_support_request_comments",
+        description: "Get the comments on one support request.",
+        access: Access::Read,
+        path: SUP,
+        action: "getCommentsByRequestId",
+        shape: Shape::Plain,
+        args: &[req("id", Ty::Int, "Support request id.")],
+        fixed: &[],
+    },
+    Tool {
+        name: "list_messages",
+        description: "List internal messages / announcements, newest first.",
+        access: Access::Read,
+        path: MSG,
+        action: "getMessagesPagination",
+        shape: Shape::Paginated,
+        args: &[
+            req("role_owner_id", Ty::Int, ROLE_OWNER_ID),
+            req("role_id", Ty::Int, ROLE_ID),
+        ],
+        fixed: &[],
+    },
+    Tool {
+        name: "list_votings",
+        description: "List building votes (голосування), newest first.",
+        access: Access::Read,
+        path: VOTE,
+        action: "getVotingsPagination",
+        shape: Shape::Paginated,
+        args: &[
+            opt("role_owner_id", Ty::Int, ROLE_OWNER_ID),
+            opt("role_id", Ty::Int, ROLE_ID),
+        ],
+        fixed: &[],
+    },
+    Tool {
+        name: "create_support_request",
+        description: "Create a new support request (заявка). WRITE action: confirm the details \
+                      with the user first. Category and sub-category ids come from the \
+                      dashboard's category lists (`-1` = \"Інше\" / other).",
+        access: Access::Write,
+        path: SUP,
+        action: "saveSupportRequest",
+        shape: Shape::Plain,
+        args: &[
+            req("user_id", Ty::Int, "Your user id."),
+            req("property_id", Ty::Int, "The property the request is about."),
+            req("support_id", Ty::Int, HK_ID),
+            req("category", Ty::Int, "Category id."),
+            req(
+                "description",
+                Ty::Str { max: 999 },
+                "What is wrong (1–999 characters).",
+            ),
+            opt(
+                "author_user_id",
+                Ty::Int,
+                "Author user id (usually your user id).",
+            ),
+            opt("property_type", Ty::Int, "Property type code."),
+            opt("type", Ty::Int, "Request type code."),
+            opt("sub_category", Ty::Int, "Sub-category id."),
+            opt("status", Ty::Int, "Initial status code."),
+            opt("user_full_name", Ty::Str { max: 255 }, "Your full name."),
+            opt(
+                "request_entity_type",
+                Ty::Int,
+                "Entity type (1 = individual).",
+            ),
+            opt("request_entity_id", Ty::Int, "Entity id."),
+            opt("subscriber_id", Ty::Int, "Subscriber (account) id."),
+            opt(
+                "schedule",
+                Ty::TimeSlot,
+                "Time slot for sub-categories that need one, or null.",
+            ),
+        ],
+        fixed: &[("comment_type", 0)],
+    },
+    Tool {
+        name: "comment_on_support_request",
+        description: "Add a comment to an existing support request. WRITE action: the comment \
+                      is visible to building staff; confirm the text with the user first.",
+        access: Access::Write,
+        path: SUP,
+        action: "saveComment",
+        shape: Shape::Plain,
+        args: &[
+            req("request_id", Ty::Int, "Support request id."),
+            req("comment_text", Ty::Str { max: 2000 }, "The comment."),
+            opt("user_id", Ty::Int, "Your user id."),
+        ],
+        fixed: &[("comment_type", 0)],
+    },
 ];
 
-/// The tool list advertised over `tools/list`.
-pub fn list(allow_writes: bool) -> Value {
-    let mut tools = read_tools();
-    if allow_writes {
-        tools.extend(write_tools());
-    }
-    Value::Array(tools)
+fn find(name: &str) -> Option<&'static Tool> {
+    TOOLS.iter().find(|t| t.name == name)
 }
 
 /// Whether `name` is a tool this server knows, read or write.
 pub fn exists(name: &str) -> bool {
-    read_tools()
+    find(name).is_some()
+}
+
+/// The tool list advertised over `tools/list`.
+pub fn list(allow_writes: bool) -> Value {
+    TOOLS
         .iter()
-        .chain(write_tools().iter())
-        .any(|t| t["name"] == name)
+        .filter(|t| allow_writes || t.access == Access::Read)
+        .map(describe)
+        .collect()
 }
 
-/// Dispatch a `tools/call`. Returns the pretty-printed JSON payload as text.
-pub async fn call(name: &str, args: Value, allow_writes: bool) -> Result<String> {
-    // Gate writes before touching the network.
-    if is_write_tool(name) && !allow_writes {
-        return Err(CheckDomError::Unexpected(
-            "write tools are disabled; restart the server with --allow-writes to enable them"
-                .into(),
-        ));
+fn describe(tool: &Tool) -> Value {
+    let read = tool.access == Access::Read;
+    json!({
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": input_schema(tool),
+        // Hints let clients ask for stricter approval on writes.
+        "annotations": {
+            "readOnlyHint": read,
+            "destructiveHint": false,
+            "idempotentHint": read,
+            "openWorldHint": true
+        }
+    })
+}
+
+fn input_schema(tool: &Tool) -> Value {
+    let mut props = Map::new();
+    let mut required = Vec::new();
+    if tool.shape == Shape::Paginated {
+        props.insert(
+            "page".into(),
+            json!({ "type": "integer", "minimum": 1, "default": 1 }),
+        );
+        props.insert(
+            "per_page".into(),
+            json!({ "type": "integer", "minimum": 1, "maximum": MAX_PER_PAGE, "default": DEFAULT_PER_PAGE }),
+        );
     }
-
-    let client = CheckDomClient::from_stored()?;
-
-    let data = match name {
-        "list_housekeepers" => client.rpc(IDX, "getUserHousekeepers", json!({})).await?,
-        "list_houses" => client.rpc(PROP, "getUserHouses", json!({})).await?,
-        "get_debt_status" => {
-            let params = json!({
-                "hk_id": req_i64(&args, "hk_id")?,
-                "house_id": opt(&args, "house_id"),
-                "section": opt(&args, "section"),
-                "floor": opt(&args, "floor"),
-            });
-            client.rpc(DEBT, "getDebtStatus", params).await?
-        }
-        "list_invoices" => {
-            client
-                .rpc(INV, "getIncomingInvoicesPagination", pagination(&args))
-                .await?
-        }
-        "list_support_requests" => {
-            client
-                .rpc(SUP, "getSupportRequestsPagination", pagination(&args))
-                .await?
-        }
-        "get_support_request_comments" => {
-            client
-                .rpc(
-                    SUP,
-                    "getCommentsByRequestId",
-                    json!({ "id": req_i64(&args, "id")? }),
-                )
-                .await?
-        }
-        "list_messages" => {
-            let mut p = pagination(&args);
-            if let Value::Object(ref mut m) = p {
-                m.insert("role_owner_id".into(), opt(&args, "role_owner_id"));
-                m.insert("role_id".into(), opt(&args, "role_id"));
-            }
-            client.rpc(MSG, "getMessagesPagination", p).await?
-        }
-        "list_votings" => {
-            client
-                .rpc(VOTE, "getVotingsPagination", pagination(&args))
-                .await?
-        }
-
-        "create_support_request" => {
-            let params = support_request_params(args)?;
-            client.rpc(SUP, "saveSupportRequest", params).await?
-        }
-        "comment_on_support_request" => {
-            let params = json!({
-                "request_id": req_i64(&args, "request_id")?,
-                "comment_text": req_nonempty_str(&args, "comment_text")?,
-                "comment_type": 0,
-            });
-            client.rpc(SUP, "saveComment", params).await?
-        }
-
-        other => return Err(CheckDomError::Unexpected(format!("unknown tool: {other}"))),
-    };
-
-    serde_json::to_string_pretty(&data).map_err(CheckDomError::from)
-}
-
-fn is_write_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "create_support_request" | "comment_on_support_request"
-    )
-}
-
-fn read_tools() -> Vec<Value> {
-    vec![
-        tool(
-            "list_housekeepers",
-            "List your building managers (домоуправителі / ОСББ) and their ids. Many other \
-             tools take an `hk_id` from here.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-        ),
-        tool(
-            "list_houses",
-            "List your properties / houses registered on CheckDom.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-        ),
-        tool(
-            "get_debt_status",
-            "Get the balance / debt state (платіжний радар) for a building.",
-            json!({
-                "type": "object",
+    for arg in tool.args {
+        let mut schema = match arg.ty {
+            Ty::Int => json!({ "type": "integer" }),
+            Ty::Str { max } => json!({ "type": "string", "minLength": 1, "maxLength": max }),
+            Ty::TimeSlot => json!({
+                "type": ["object", "null"],
                 "properties": {
-                    "hk_id": { "type": "integer", "description": "Housekeeper id from list_housekeepers." },
-                    "house_id": { "type": "integer", "description": "Optional house filter." },
-                    "section": { "type": "string", "description": "Optional section filter." },
-                    "floor": { "type": "string", "description": "Optional floor filter." }
+                    "start_datetime": { "type": "string" },
+                    "end_datetime": { "type": "string" }
                 },
-                "required": ["hk_id"],
+                "required": ["start_datetime", "end_datetime"],
                 "additionalProperties": false
             }),
-        ),
-        tool(
-            "list_invoices",
-            "List incoming invoices (рахунки).",
-            pagination_schema(),
-        ),
-        tool(
-            "list_support_requests",
-            "List your support requests (заявки) with their status and SLA.",
-            pagination_schema(),
-        ),
-        tool(
-            "get_support_request_comments",
-            "Get the comments on one support request.",
-            json!({
-                "type": "object",
-                "properties": { "id": { "type": "integer", "description": "Support request id." } },
-                "required": ["id"],
-                "additionalProperties": false
-            }),
-        ),
-        tool(
-            "list_messages",
-            "List internal messages / announcements.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "page": { "type": "integer", "minimum": 1, "default": 1 },
-                    "per_page": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
-                    "role_owner_id": { "type": "integer", "description": "Required by the endpoint; from list_housekeepers." },
-                    "role_id": { "type": "integer", "description": "Required by the endpoint." }
-                },
-                "additionalProperties": false
-            }),
-        ),
-        tool(
-            "list_votings",
-            "List building votes (голосування).",
-            pagination_schema(),
-        ),
-    ]
-}
-
-fn write_tools() -> Vec<Value> {
-    vec![
-        tool(
-            "create_support_request",
-            "Create a new support request (заявка). WRITE action. Requires the full set of \
-             fields the dashboard sends (see docs/API.md: saveSupportRequest) — notably \
-             user_id, author_user_id, property_id, property_type, support_id (hk id), category, \
-             sub_category, and description (1–999 chars). Confirm details with the user first.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "user_id": { "type": "integer" },
-                    "author_user_id": { "type": "integer" },
-                    "property_id": { "type": "integer" },
-                    "property_type": { "type": "integer" },
-                    "support_id": { "type": "integer", "description": "Housekeeper id." },
-                    "category": { "type": "integer" },
-                    "sub_category": { "type": "integer" },
-                    "description": { "type": "string", "minLength": 1, "maxLength": 999 },
-                    "type": { "type": "integer" },
-                    "status": { "type": "integer" },
-                    "user_full_name": { "type": "string" },
-                    "request_entity_type": { "type": "integer" },
-                    "request_entity_id": { "type": "integer" },
-                    "subscriber_id": { "type": "integer" },
-                    "schedule": {
-                        "type": ["object", "null"],
-                        "description": "Time slot {start_datetime, end_datetime} for sub-categories that need one."
-                    }
-                },
-                "required": ["user_id", "property_id", "support_id", "category", "description"],
-                "additionalProperties": false
-            }),
-        ),
-        tool(
-            "comment_on_support_request",
-            "Add a comment to an existing support request. WRITE action.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "request_id": { "type": "integer", "description": "Support request id." },
-                    "comment_text": { "type": "string", "minLength": 1 }
-                },
-                "required": ["request_id", "comment_text"],
-                "additionalProperties": false
-            }),
-        ),
-    ]
-}
-
-fn tool(name: &str, description: &str, input_schema: Value) -> Value {
-    json!({ "name": name, "description": description, "inputSchema": input_schema })
-}
-
-fn pagination_schema() -> Value {
+        };
+        schema["description"] = json!(arg.description);
+        props.insert(arg.name.into(), schema);
+        if arg.required {
+            required.push(arg.name);
+        }
+    }
     json!({
         "type": "object",
-        "properties": {
-            "page": { "type": "integer", "minimum": 1, "default": 1 },
-            "per_page": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
-            "filters": { "type": "object", "description": "Optional column filters." }
-        },
+        "properties": props,
+        "required": required,
         "additionalProperties": false
     })
 }
 
-fn pagination(args: &Value) -> Value {
-    let page = args.get("page").and_then(Value::as_i64).unwrap_or(1).max(1);
-    let per_page = args
-        .get("per_page")
-        .and_then(Value::as_i64)
-        .unwrap_or(25)
-        .clamp(1, MAX_PER_PAGE);
-    json!({
-        "pagination": { "page": page, "perPage": per_page, "orderBy": { "param": "id", "dir": "desc" } },
-        "filters": args.get("filters").cloned().unwrap_or_else(|| json!({}))
-    })
-}
-
-fn opt(args: &Value, key: &str) -> Value {
-    args.get(key).cloned().unwrap_or(Value::Null)
-}
-
-fn req_i64(args: &Value, key: &str) -> Result<i64> {
-    args.get(key)
-        .and_then(Value::as_i64)
-        .ok_or_else(|| CheckDomError::Unexpected(format!("missing or non-integer argument: {key}")))
-}
-
-fn req_nonempty_str(args: &Value, key: &str) -> Result<String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            CheckDomError::Unexpected(format!("missing or empty string argument: {key}"))
-        })
-}
-
-/// Validate `create_support_request` arguments against [`SUPPORT_REQUEST_FIELDS`].
-fn support_request_params(args: Value) -> Result<Value> {
-    let Value::Object(map) = args else {
-        return Err(CheckDomError::Unexpected(
-            "expected an object of arguments".into(),
+/// Dispatch a `tools/call`. Returns the pretty-printed JSON payload as text.
+pub async fn call(name: &str, args: Value, allow_writes: bool) -> Result<String> {
+    let tool = find(name).ok_or_else(|| invalid(format!("unknown tool: {name}")))?;
+    // Gate writes, then validate, before reading the token or touching the network.
+    if tool.access == Access::Write && !allow_writes {
+        return Err(invalid(
+            "write tools are disabled; restart the server with --allow-writes to enable them",
         ));
+    }
+    let params = build_params(tool, args)?;
+    let client = CheckDomClient::from_stored()?;
+    let data = client.rpc(tool.path, tool.action, params).await?;
+    serde_json::to_string_pretty(&data).map_err(CheckDomError::from)
+}
+
+fn invalid(msg: impl Into<String>) -> CheckDomError {
+    CheckDomError::Unexpected(msg.into())
+}
+
+/// Validate `args` against the tool's declared arguments and build the RPC params.
+///
+/// Unknown keys are rejected, so a tool sends only the fields it documents.
+fn build_params(tool: &Tool, args: Value) -> Result<Value> {
+    let mut args = match args {
+        Value::Object(map) => map,
+        Value::Null => Map::new(),
+        _ => return Err(invalid("arguments must be an object")),
     };
-    if let Some(key) = map
-        .keys()
-        .find(|k| !SUPPORT_REQUEST_FIELDS.contains(&k.as_str()))
-    {
-        return Err(CheckDomError::Unexpected(format!(
-            "unsupported argument for create_support_request: {key}"
+
+    let mut params = Map::new();
+    if tool.shape == Shape::Paginated {
+        let page = take_int_in(&mut args, "page", 1, 1, i64::MAX)?;
+        let per_page = take_int_in(&mut args, "per_page", DEFAULT_PER_PAGE, 1, MAX_PER_PAGE)?;
+        params.insert(
+            "pagination".into(),
+            json!({ "page": page, "perPage": per_page, "orderBy": { "param": "id", "dir": "desc" } }),
+        );
+        params.insert("filters".into(), json!({}));
+    }
+
+    for arg in tool.args {
+        match args.remove(arg.name) {
+            // An explicit `null` time slot means "no slot" and is sent as such.
+            Some(Value::Null) if matches!(arg.ty, Ty::TimeSlot) => {
+                params.insert(arg.name.into(), Value::Null);
+            }
+            None | Some(Value::Null) => {
+                if arg.required {
+                    return Err(invalid(format!("missing argument: {}", arg.name)));
+                }
+            }
+            Some(value) => {
+                check_type(arg, &value)?;
+                params.insert(arg.name.into(), value);
+            }
+        }
+    }
+
+    if let Some(key) = args.keys().next() {
+        return Err(invalid(format!(
+            "unsupported argument for {}: {key}",
+            tool.name
         )));
     }
-    let args = Value::Object(map);
-    for key in ["user_id", "property_id", "support_id", "category"] {
-        req_i64(&args, key)?;
+    for (key, value) in tool.fixed {
+        params.insert((*key).into(), json!(value));
     }
-    let description = req_nonempty_str(&args, "description")?;
-    if description.chars().count() > MAX_DESCRIPTION_CHARS {
-        return Err(CheckDomError::Unexpected(format!(
-            "description is longer than {MAX_DESCRIPTION_CHARS} characters"
-        )));
+    Ok(Value::Object(params))
+}
+
+fn take_int_in(
+    args: &mut Map<String, Value>,
+    key: &str,
+    default: i64,
+    min: i64,
+    max: i64,
+) -> Result<i64> {
+    let Some(value) = args.remove(key) else {
+        return Ok(default);
+    };
+    value
+        .as_i64()
+        .filter(|n| (min..=max).contains(n))
+        .ok_or_else(|| invalid(format!("{key} must be an integer from {min} to {max}")))
+}
+
+fn check_type(arg: &Arg, value: &Value) -> Result<()> {
+    let ok = match arg.ty {
+        Ty::Int => value.is_i64(),
+        Ty::Str { max } => value
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty() && s.chars().count() <= max),
+        Ty::TimeSlot => match value {
+            Value::Null => true,
+            Value::Object(m) => {
+                m.len() == 2
+                    && ["start_datetime", "end_datetime"]
+                        .iter()
+                        .all(|k| m.get(*k).is_some_and(Value::is_string))
+            }
+            _ => false,
+        },
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "invalid argument {}: expected {}",
+            arg.name,
+            match arg.ty {
+                Ty::Int => "an integer".to_string(),
+                Ty::Str { max } => format!("a non-empty string of at most {max} characters"),
+                Ty::TimeSlot => "{start_datetime, end_datetime} or null".to_string(),
+            }
+        )))
     }
-    Ok(args)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn read_tools_present_write_tools_gated() {
-        let read_only = list(false);
-        let both = list(true);
-        let names = |v: &Value| -> Vec<String> {
-            v.as_array()
-                .unwrap()
-                .iter()
-                .map(|t| t["name"].as_str().unwrap().to_string())
-                .collect()
-        };
-        assert!(names(&read_only).contains(&"list_housekeepers".to_string()));
-        assert!(!names(&read_only).contains(&"create_support_request".to_string()));
-        assert!(names(&both).contains(&"create_support_request".to_string()));
+    /// Minimal valid arguments for `tool`: every required argument filled in.
+    fn minimal_args(tool: &Tool) -> Value {
+        let mut m = Map::new();
+        for arg in tool.args.iter().filter(|a| a.required) {
+            let v = match arg.ty {
+                Ty::Int => json!(1),
+                Ty::Str { .. } => json!("text"),
+                Ty::TimeSlot => Value::Null,
+            };
+            m.insert(arg.name.into(), v);
+        }
+        Value::Object(m)
+    }
+
+    fn names(v: &Value) -> Vec<&str> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect()
     }
 
     #[test]
-    fn pagination_defaults() {
-        let p = pagination(&json!({}));
+    fn tool_names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        assert!(TOOLS.iter().all(|t| seen.insert(t.name)));
+    }
+
+    #[test]
+    fn read_only_list_has_exactly_the_read_tools() {
+        let reads: Vec<&str> = TOOLS
+            .iter()
+            .filter(|t| t.access == Access::Read)
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names(&list(false)), reads);
+        assert_eq!(names(&list(true)).len(), TOOLS.len());
+    }
+
+    #[tokio::test]
+    async fn every_write_tool_is_refused_without_allow_writes() {
+        for tool in TOOLS.iter().filter(|t| t.access == Access::Write) {
+            let err = call(tool.name, minimal_args(tool), false)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("--allow-writes"), "{}", tool.name);
+        }
+    }
+
+    #[test]
+    fn no_tool_reaches_a_payment_action() {
+        // payByClientCard charges a saved card; it must never be reachable.
+        for tool in TOOLS {
+            assert_ne!(tool.action, "payByClientCard", "{}", tool.name);
+        }
+    }
+
+    #[test]
+    fn annotations_follow_access() {
+        for tool in TOOLS {
+            let hints = &describe(tool)["annotations"];
+            let read = tool.access == Access::Read;
+            assert_eq!(hints["readOnlyHint"], read, "{}", tool.name);
+            assert_eq!(hints["idempotentHint"], read, "{}", tool.name);
+        }
+    }
+
+    #[test]
+    fn schema_lists_exactly_the_accepted_arguments() {
+        for tool in TOOLS {
+            let schema = input_schema(tool);
+            assert_eq!(schema["additionalProperties"], false);
+            let props = schema["properties"].as_object().unwrap();
+            let paged = usize::from(tool.shape == Shape::Paginated) * 2;
+            assert_eq!(props.len(), tool.args.len() + paged, "{}", tool.name);
+            // The minimal arguments the schema requires are accepted.
+            build_params(tool, minimal_args(tool)).unwrap();
+        }
+    }
+
+    #[test]
+    fn unknown_arguments_are_rejected_for_every_tool() {
+        for tool in TOOLS {
+            let mut args = minimal_args(tool);
+            args["action"] = json!("changeStatus");
+            assert!(build_params(tool, args).is_err(), "{}", tool.name);
+
+            let mut args = minimal_args(tool);
+            args["filters"] = json!({ "user_id": 2 });
+            assert!(build_params(tool, args).is_err(), "{}", tool.name);
+        }
+    }
+
+    #[test]
+    fn missing_or_mistyped_arguments_are_rejected() {
+        let tool = find("get_debt_status").unwrap();
+        assert!(build_params(tool, json!({})).is_err());
+        assert!(build_params(tool, json!({ "hk_id": "7" })).is_err());
+        assert!(build_params(tool, json!({ "hk_id": 7, "house_id": { "$ne": 0 } })).is_err());
+        assert!(build_params(tool, json!({ "hk_id": 7, "section": ["a"] })).is_err());
+        assert!(build_params(tool, json!([7])).is_err());
+        let p = build_params(tool, json!({ "hk_id": 7, "floor": "3" })).unwrap();
+        assert_eq!(p, json!({ "hk_id": 7, "floor": "3" }));
+    }
+
+    #[test]
+    fn pagination_defaults_and_range() {
+        let tool = find("list_invoices").unwrap();
+        let p = build_params(tool, Value::Null).unwrap();
         assert_eq!(p["pagination"]["page"], 1);
-        assert_eq!(p["pagination"]["perPage"], 25);
+        assert_eq!(p["pagination"]["perPage"], DEFAULT_PER_PAGE);
+        assert_eq!(p["filters"], json!({}));
+
+        let p = build_params(tool, json!({ "page": 3, "per_page": 100 })).unwrap();
+        assert_eq!(p["pagination"]["page"], 3);
+        assert_eq!(p["pagination"]["perPage"], 100);
+
+        for bad in [
+            json!({ "page": 0 }),
+            json!({ "per_page": 101 }),
+            json!({ "page": "2" }),
+        ] {
+            assert!(build_params(tool, bad).is_err());
+        }
     }
 
     #[test]
-    fn pagination_is_clamped() {
-        let p = pagination(&json!({ "page": -3, "per_page": 100_000 }));
-        assert_eq!(p["pagination"]["page"], 1);
-        assert_eq!(p["pagination"]["perPage"], MAX_PER_PAGE);
-    }
-
-    #[test]
-    fn support_request_rejects_unknown_fields() {
+    fn support_request_validation() {
+        let tool = find("create_support_request").unwrap();
         let ok = json!({
-            "user_id": 1, "property_id": 2, "support_id": 3, "category": 4,
-            "description": "Лампа в під'їзді не світить"
+            "user_id": 1, "property_id": 2, "support_id": 3, "category": -1,
+            "description": "Лампа в під'їзді не світить",
+            "schedule": { "start_datetime": "2026-11-02 10:00", "end_datetime": "2026-11-02 12:00" }
         });
-        assert!(support_request_params(ok.clone()).is_ok());
+        let p = build_params(tool, ok.clone()).unwrap();
+        assert_eq!(p["comment_type"], 0);
+        assert_eq!(p["category"], -1);
 
-        let mut smuggled = ok.clone();
-        smuggled["action"] = json!("changeStatus");
-        assert!(support_request_params(smuggled).is_err());
+        let mut v = ok.clone();
+        v["description"] = json!("  ");
+        assert!(build_params(tool, v).is_err());
 
-        let mut empty = ok.clone();
-        empty["description"] = json!("  ");
-        assert!(support_request_params(empty).is_err());
+        let mut v = ok.clone();
+        v["description"] = json!("я".repeat(1000));
+        assert!(build_params(tool, v).is_err());
 
-        let mut long = ok;
-        long["description"] = json!("я".repeat(MAX_DESCRIPTION_CHARS + 1));
-        assert!(support_request_params(long).is_err());
+        let mut v = ok.clone();
+        v["schedule"] = json!({ "start_datetime": "x" });
+        assert!(build_params(tool, v).is_err());
+
+        let mut v = ok;
+        v["schedule"] = Value::Null;
+        assert!(build_params(tool, v).unwrap()["schedule"].is_null());
     }
 
     #[test]
-    fn every_listed_tool_exists_and_nothing_else() {
-        assert!(exists("list_votings"));
-        assert!(exists("comment_on_support_request"));
-        assert!(!exists("payByClientCard"));
+    fn fixed_fields_cannot_be_overridden() {
+        let tool = find("comment_on_support_request").unwrap();
+        let args = json!({ "request_id": 1, "comment_text": "Дякую", "comment_type": 5 });
+        assert!(build_params(tool, args).is_err());
     }
 }

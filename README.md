@@ -23,7 +23,7 @@ own login**.
 - **Read-first and least-privilege.** Read tools are always available. Tools that change
   anything are **off by default** and must be turned on explicitly.
 - **Never moves money by itself.** There is no tool that completes a payment. Payment-related
-  reads can produce a pay link for *you* to open; the server never charges a card.
+  flows can at most produce a pay link for *you* to open; the server never charges a card.
 - **Auditable.** Small, typed tool surface — no raw "call any endpoint" passthrough. Every
   exposed action is a vetted function with a known shape.
 
@@ -59,17 +59,16 @@ checkdom-mcp login
 - `checkdom-mcp logout` removes the stored token.
 - `checkdom-mcp status` shows whether a valid session is stored.
 
-The token is written with owner-only permissions (`0600`, directory `0700`) to
-`credentials.toml` in your config directory:
+The token is written to `session-token` in your config directory:
 
-| OS | Path |
-|---|---|
-| macOS | `~/Library/Application Support/checkdom-mcp/credentials.toml` |
-| Linux | `$XDG_CONFIG_HOME/checkdom-mcp/credentials.toml` (default `~/.config/…`) |
-| Windows | `%APPDATA%\checkdom-mcp\credentials.toml` |
+| OS | Path | Protection |
+|---|---|---|
+| macOS | `~/Library/Application Support/checkdom-mcp/session-token` | file `0600`, directory `0700` |
+| Linux | `$XDG_CONFIG_HOME/checkdom-mcp/session-token` (default `~/.config/…`) | file `0600`, directory `0700` |
+| Windows | `%APPDATA%\checkdom-mcp\session-token` | your user profile's default permissions |
 
- It is a session token, not your password — the
-password is used only during `login` and is never stored.
+It is a session token, not your password — the password is used only during `login` and is
+never stored.
 
 ## Connect it to Claude
 
@@ -116,7 +115,14 @@ To allow the write tools (file / comment on support requests), add the opt-in fl
 | `comment_on_support_request` | Adds a comment to an existing request |
 
 Without `--allow-writes`, the write tools are not registered and any attempt returns a clear
-"writes are disabled" error. `create_support_request` accepts only the documented
+"writes are disabled" error. Every tool rejects arguments it does not document. Tools carry
+MCP annotations (`readOnlyHint`), so clients can ask for stricter approval on writes.
+
+> [!CAUTION]
+> Messages and request comments are written by other people, and the model reads them next to
+> your private data. With `--allow-writes`, a crafted message could try to make the model post
+> that data in a comment. Keep per-call approval on for write tools in your MCP client, and
+> read what the model is about to send. `create_support_request` accepts only the documented
 `saveSupportRequest` fields and rejects anything else.
 
 ## Security
