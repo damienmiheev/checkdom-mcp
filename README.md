@@ -8,7 +8,8 @@ It lets an MCP-capable AI assistant (Claude Desktop, Claude Code, etc.) read you
 account — balances, invoices, payments, reports, support requests, messages, news, polls,
 passes and documents — and, when you explicitly enable it, file or comment on support
 requests, vote, cancel a pass or prepare a pay link, **on your behalf and only against your
-own login**. Lists are limited to your own rows.
+own login**. Every id a tool takes (building, property, account, request, pass, poll, …) is
+checked against your own data before the request is sent.
 
 > [!WARNING]
 > **Unofficial and unaffiliated.** This project is not made, endorsed, or supported by
@@ -34,9 +35,10 @@ own login**. Lists are limited to your own rows.
 Early **v0.1**, not yet released: build from source (below). Runs on macOS, Linux and
 Windows; CI builds and tests all three.
 
-Checked against a real account on 2026-10-31: `login`, `status` and every read tool return
-data. The write tools are built from the dashboard's own code and unit-tested, but have not
-been run against a real account yet; try them with care.
+Checked against a real account on 2026-10-31: `login`, `status`, and every read tool for which
+the account had data (`get_voting` and `get_car` had nothing to open). The write tools are
+built from the dashboard's own code and unit-tested, but have not been run against a real
+account yet; try them with care.
 The API surface is mapped in [`docs/API.md`](docs/API.md).
 
 ## Install
@@ -112,7 +114,7 @@ On Windows, use the `.exe` path with doubled backslashes, e.g.
 
 Other MCP clients: run `checkdom-mcp serve` as a stdio server.
 
-To allow the write tools (file / comment on support requests), add the opt-in flag:
+To allow the write tools (support requests, votes, pay links, …), add the opt-in flag:
 
 ```json
       "args": ["serve", "--allow-writes"]

@@ -57,14 +57,21 @@ All notable changes to this project are documented here. The format is based on
 ### Fixed
 - `get_debt_status` and `list_messages` failed with HTTP 500; `list_houses` (now
   `list_properties`) returned nothing. Requests now match the dashboard's own.
-- List tools send the dashboard's own-rows filters, so they return only your rows; support
-  requests are also checked row by row.
+- List tools send the same filters as the dashboard pages; support request rows are also
+  checked against your user id.
 - `create_support_request` and `comment_on_support_request` now send the dashboard's exact
   fields (string `property_id`, `files`, `user_id`, …).
 - Login uses the dashboard's `userLogin` RPC (verified live). Posting the HTML login form
   never worked: `POST /login` is 301-redirected and loses its body.
 
 ### Security
+- Every id argument is checked against your own data before the request is sent; read and
+  write tools refuse other people's buildings, properties, accounts, invoices, requests,
+  passes, cars, polls and messages.
+- `get_pay_link` accepts only monobank's or LiqPay's own payment pages, and amounts in whole
+  kopecks from 0.01 UAH.
+- Irreversible writes (`vote`, `close_support_request`, `cancel_temporary_pass`) carry the MCP
+  `destructiveHint`.
 - Redirects are followed only to checkdom.in.ua, so a 307/308 can't replay the password.
 - The token file is written atomically and never through a symlink.
 - Tool arguments can no longer override the RPC `action` (they were merged after it).

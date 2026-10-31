@@ -67,11 +67,11 @@ The dashboard's tables (`simplePaginator.js`) send exactly:
 ```
 
 - `filters` sits **inside** `pagination`; `perPage` is a string; dates are `YYYY-MM-DD`.
-- Each table page has hidden filter inputs that limit it to the user's own rows, sent in
-  `pagination.filters` under their `data-type`. **Always send them**; without them the response
-  is not limited to the user. Response: `data.result[]` and `data.total`.
+- Each table page also has hidden filter inputs, sent in `pagination.filters` under their
+  `data-type`. Send the same parameters as the dashboard page does (`src/tools.rs`).
+  Response: `data.result[]` and `data.total`.
 
-| Table | Own-rows filters (`pagination.filters`) | `additionalData` |
+| Table | `pagination.filters` | `additionalData` |
 |---|---|---|
 | `getSupportRequestsPagination` | `role_id: "3"`, `role_owner_id`, `filterByUser`: user id (string) | `{}` |
 | `filterUserTemporaryPassPagination` | `role_id: "3"`, `role_owner_id` | `{}` |
@@ -128,7 +128,7 @@ Controller paths are under `/modules/`. Parameters marked *user* are the user id
 
 | | Action | Params |
 |---|---|---|
-| ✅ | `getSupportRequestsPagination` | table (own-rows filters above). Status 0 new, 1 in progress, 2 waiting for the client, 3 closed |
+| ✅ | `getSupportRequestsPagination` | table (filters above). Status 0 new, 1 in progress, 2 waiting for the client, 3 closed |
 | ✅ | `getCommentsByRequestId` | `id` |
 | ✅ | `getUserHouseKepers` (sic) | `user_id`: *user* |
 | ✅ | `getSupportRequestCategoryByOwnerIdAndUserType` | `id`: hk id, `type: 1` (a private person) |
@@ -154,7 +154,7 @@ Controller paths are under `/modules/`. Parameters marked *user* are the user id
 | | Action | Params |
 |---|---|---|
 | ✅ | `getVotingRequests` | `type: 0`, `role_owner_id`: *user*, `role_id: "3"` → `requests[]` (not `result`) |
-| ✅ | `getVotingsPagination` | table (own-rows filters above) |
+| ✅ | `getVotingsPagination` | table (filters above) |
 | 📄 | `getVotingCard` | `id`, `voter: true`, `role_owner_id`, `role_id` → `voting{questions[{id, propositions[{id, proposition}]}], votes[]}` |
 | 📄 W | `vote` | `question_id`, `proposition_id`, `voting_id`, `role_id`, `role_owner_id` |
 
@@ -162,11 +162,11 @@ Controller paths are under `/modules/`. Parameters marked *user* are the user id
 
 | | Controller | Action | Params |
 |---|---|---|---|
-| ✅ | `houseKeeper/api/apiTemporaryPassController.php` | `filterUserTemporaryPassPagination` | table (own-rows filters) |
+| ✅ | `houseKeeper/api/apiTemporaryPassController.php` | `filterUserTemporaryPassPagination` | table (filters above) |
 | ✅ | `houseKeeper/api/apiTemporaryPassController.php` | `getTemporaryPassModalData` | `pass_id`. Share link `https://checkdom.in.ua/pass/<token>` |
 | ✅ | `houseKeeper/api/apiTemporaryPassController.php` | `getUserApartments` | — |
 | 📄 W | `houseKeeper/api/apiTemporaryPassController.php` | `cancelPass` | `pass_id` |
-| ✅ | `houseKeeper/api/apiLongtermPassController.php` | `filterUserLongtermPassPagination` | table (own-rows filters) |
+| ✅ | `houseKeeper/api/apiLongtermPassController.php` | `filterUserLongtermPassPagination` | table (filters above) |
 | ✅ | `cars/api/apiCarsController.php` | `carsPagePagination`, `getCarModalData` | table; `id` |
 
 ### Documents

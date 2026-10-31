@@ -35,6 +35,8 @@ const ACCOUNT: &str = "/modules/private/api/apiAccount.php";
 const FILES: &str = "/modules/files/api/apiFile.php";
 const STATEMENTS: &str = "/modules/files/api/apiStatement.php";
 
+/// monobank's hosted payment pages.
+const MONO_HOST: &str = "pay.monobank.ua";
 /// LiqPay's hosted checkout page; the dashboard embeds the same `data` + `signature`.
 const LIQPAY_CHECKOUT: &str = "https://www.liqpay.ua/api/3/checkout";
 /// The most a single pay link may ask for, as a guard against a mistyped amount.
@@ -58,6 +60,10 @@ enum Access {
 enum Ty {
     /// A JSON integer (ids, enum codes). `-1` is a valid category id ("Інше").
     Int,
+    /// A record id: a positive JSON integer.
+    Id,
+    /// An integer from `min` to `max` (an enum code or a count).
+    IntIn { min: i64, max: i64 },
     /// A non-blank string of at most `max` characters.
     Str { max: usize },
     /// A JSON boolean.
@@ -99,6 +105,30 @@ enum Place {
     Filter,
 }
 
+/// What an id argument must belong to. Checked against your own data before
+/// the request is sent, so a tool can't be pointed at someone else's records
+/// (e.g. by instructions planted in a message the model reads).
+#[derive(Clone, Copy, Debug)]
+enum Own {
+    /// One of your building managers.
+    Housekeeper,
+    /// One of your properties (owned or rented).
+    Property,
+    /// One of your personal accounts.
+    Account,
+    /// The `id` of a row in one of these list tools (which list only your own
+    /// rows). `fill` copies fields of that row into the request:
+    /// `(request key, row field)`.
+    Row {
+        lists: &'static [&'static str],
+        fill: &'static [(&'static str, &'static str)],
+    },
+}
+
+const fn row(lists: &'static [&'static str]) -> Own {
+    Own::Row { lists, fill: &[] }
+}
+
 #[derive(Debug)]
 struct Arg {
     /// The tool argument's name.
@@ -109,6 +139,8 @@ struct Arg {
     required: bool,
     /// Sent when the argument is omitted.
     default: Option<Val>,
+    /// What the value must belong to (see [`Own`]).
+    own: Option<Own>,
     description: &'static str,
 }
 
@@ -119,6 +151,7 @@ const fn req(name: &'static str, ty: Ty, description: &'static str) -> Arg {
         ty,
         required: true,
         default: None,
+        own: None,
         description,
     }
 }
@@ -130,6 +163,7 @@ const fn opt(name: &'static str, ty: Ty, description: &'static str) -> Arg {
         ty,
         required: false,
         default: None,
+        own: None,
         description,
     }
 }
@@ -144,6 +178,12 @@ impl Arg {
     /// Send `value` when the argument is omitted.
     const fn or(mut self, value: Val) -> Self {
         self.default = Some(value);
+        self
+    }
+
+    /// Require the value to belong to the user (see [`Own`]).
+    const fn own(mut self, own: Own) -> Self {
+        self.own = Some(own);
         self
     }
 }
@@ -237,7 +277,7 @@ const TOOLS: &[Tool] = &[
         path: DEBT,
         action: "getHousekeeperFilters",
         shape: Shape::Plain,
-        args: &[req("hk_id", Ty::Int, HK_ID)],
+        args: &[req("hk_id", Ty::Id, HK_ID).own(Own::Housekeeper)],
         fixed: &[],
         owner: None,
     },
@@ -251,7 +291,7 @@ const TOOLS: &[Tool] = &[
         action: "getDebtStatus",
         shape: Shape::Plain,
         args: &[
-            req("hk_id", Ty::Int, HK_ID),
+            req("hk_id", Ty::Id, HK_ID).own(Own::Housekeeper),
             opt(
                 "house_id",
                 Ty::Str { max: 32 },
@@ -293,7 +333,7 @@ const TOOLS: &[Tool] = &[
         path: INV_CARD,
         action: "getIncomingInvoiceCard",
         shape: Shape::Plain,
-        args: &[req("id", Ty::Int, "Invoice id from list_invoices.")],
+        args: &[req("id", Ty::Id, "Invoice id from list_invoices.").own(row(&["list_invoices"]))],
         fixed: &[],
         owner: None,
     },
@@ -329,7 +369,12 @@ const TOOLS: &[Tool] = &[
         path: PROP,
         action: "getUserHouses",
         shape: Shape::Plain,
-        args: &[opt("mode", Ty::Int, "1 owned (default), 2 rented.").or(Val::Int(1))],
+        args: &[opt(
+            "mode",
+            Ty::IntIn { min: 1, max: 2 },
+            "1 owned (default), 2 rented.",
+        )
+        .or(Val::Int(1))],
         fixed: &[top("id", Val::UserId), top("type", Val::Str(ROLE_PRIVATE))],
         owner: None,
     },
@@ -342,13 +387,15 @@ const TOOLS: &[Tool] = &[
         action: "getApartment",
         shape: Shape::Plain,
         args: &[
-            req(
-                "property_id",
-                Ty::Int,
-                "Property `id` from list_properties.",
+            req("property_id", Ty::Id, "Property `id` from list_properties.")
+                .sent_as("id")
+                .own(Own::Property),
+            opt(
+                "mode",
+                Ty::IntIn { min: 1, max: 2 },
+                "1 owned (default), 2 rented.",
             )
-            .sent_as("id"),
-            opt("mode", Ty::Int, "1 owned (default), 2 rented.").or(Val::Int(1)),
+            .or(Val::Int(1)),
         ],
         fixed: &[],
         owner: None,
@@ -362,13 +409,15 @@ const TOOLS: &[Tool] = &[
         action: "getToPayAmount",
         shape: Shape::Plain,
         args: &[
-            req(
-                "property_id",
-                Ty::Int,
-                "Property `id` from list_properties.",
+            req("property_id", Ty::Id, "Property `id` from list_properties.")
+                .sent_as("user_property_apartment_id")
+                .own(Own::Property),
+            opt(
+                "mode",
+                Ty::IntIn { min: 1, max: 2 },
+                "1 owned (default), 2 rented.",
             )
-            .sent_as("user_property_apartment_id"),
-            opt("mode", Ty::Int, "1 owned (default), 2 rented.").or(Val::Int(1)),
+            .or(Val::Int(1)),
             opt(
                 "account_id",
                 Ty::Str { max: 32 },
@@ -395,7 +444,12 @@ const TOOLS: &[Tool] = &[
                 list_properties), or \"*\" for all (default).",
             )
             .or(Val::Str("*")),
-            opt("payfor", Ty::Int, "1 owned property (default), 2 rented.").or(Val::Int(1)),
+            opt(
+                "payfor",
+                Ty::IntIn { min: 1, max: 2 },
+                "1 owned property (default), 2 rented.",
+            )
+            .or(Val::Int(1)),
         ],
         fixed: &[],
         owner: None,
@@ -431,7 +485,7 @@ const TOOLS: &[Tool] = &[
         path: SERVICES,
         action: "getAllActiveServices",
         shape: Shape::Plain,
-        args: &[req("hk_id", Ty::Int, HK_ID)],
+        args: &[req("hk_id", Ty::Id, HK_ID).own(Own::Housekeeper)],
         fixed: &[],
         owner: None,
     },
@@ -443,7 +497,7 @@ const TOOLS: &[Tool] = &[
         path: HOUSES,
         action: "getHouses",
         shape: Shape::Plain,
-        args: &[req("hk_id", Ty::Int, HK_ID)],
+        args: &[req("hk_id", Ty::Id, HK_ID).own(Own::Housekeeper)],
         fixed: &[],
         owner: None,
     },
@@ -457,10 +511,12 @@ const TOOLS: &[Tool] = &[
         action: "initChart",
         shape: Shape::Plain,
         args: &[
-            req("hk_id", Ty::Int, HK_ID).sent_as("role_owner_id"),
+            req("hk_id", Ty::Id, HK_ID)
+                .own(Own::Housekeeper)
+                .sent_as("role_owner_id"),
             req(
                 "chart_type",
-                Ty::Int,
+                Ty::IntIn { min: 0, max: 2 },
                 "0 billed vs paid, 1 billing by service, 2 payments by service.",
             ),
             req("from_date", Ty::ChartDate, "First day, YYYY-MM-DD.").sent_as("chart_interval"),
@@ -492,7 +548,9 @@ const TOOLS: &[Tool] = &[
         path: BANK,
         action: "getBankAccountsList",
         shape: Shape::Plain,
-        args: &[req("hk_id", Ty::Int, HK_ID).sent_as("role_owner_id")],
+        args: &[req("hk_id", Ty::Id, HK_ID)
+            .own(Own::Housekeeper)
+            .sent_as("role_owner_id")],
         // The dashboard asks as the housekeeper role (2), even for a resident.
         fixed: &[top("role_id", Val::Int(2))],
         owner: None,
@@ -507,10 +565,12 @@ const TOOLS: &[Tool] = &[
         action: "initChart",
         shape: Shape::Plain,
         args: &[
-            req("hk_id", Ty::Int, HK_ID).sent_as("role_owner_id"),
+            req("hk_id", Ty::Id, HK_ID)
+                .own(Own::Housekeeper)
+                .sent_as("role_owner_id"),
             req(
                 "chart_type",
-                Ty::Int,
+                Ty::IntIn { min: 1, max: 3 },
                 "1 money in and out, 2 income by category, 3 expenses by category.",
             ),
             req("from_date", Ty::ChartDate, "First day, YYYY-MM-DD.").sent_as("chart_interval"),
@@ -582,7 +642,7 @@ const TOOLS: &[Tool] = &[
         path: SUP,
         action: "getCommentsByRequestId",
         shape: Shape::Plain,
-        args: &[req("id", Ty::Int, "Support request id.")],
+        args: &[req("id", Ty::Id, "Support request id.").own(row(&["list_support_requests"]))],
         fixed: &[],
         owner: None,
     },
@@ -606,7 +666,9 @@ const TOOLS: &[Tool] = &[
         path: SUP,
         action: "getSupportRequestCategoryByOwnerIdAndUserType",
         shape: Shape::Plain,
-        args: &[req("hk_id", Ty::Int, HK_ID).sent_as("id")],
+        args: &[req("hk_id", Ty::Id, HK_ID)
+            .own(Own::Housekeeper)
+            .sent_as("id")],
         // 1 = the applicant is a private person (a resident).
         fixed: &[top("type", Val::Int(1))],
         owner: None,
@@ -638,7 +700,9 @@ const TOOLS: &[Tool] = &[
         path: SUP,
         action: "getUserPropertyByUserIdHkId",
         shape: Shape::Plain,
-        args: &[req("hk_id", Ty::Int, HK_ID).sent_as("hkId")],
+        args: &[req("hk_id", Ty::Id, HK_ID)
+            .own(Own::Housekeeper)
+            .sent_as("hkId")],
         fixed: &[top("userId", Val::UserId)],
         owner: None,
     },
@@ -652,7 +716,7 @@ const TOOLS: &[Tool] = &[
         action: "getSupportSubCategoryScheduleMap",
         shape: Shape::Plain,
         args: &[
-            req("sub_category_id", Ty::Int, "Sub-category id."),
+            req("sub_category_id", Ty::Id, "Sub-category id."),
             req("from_date", Ty::Date, "First day, YYYY-MM-DD."),
             req(
                 "to_date",
@@ -729,9 +793,16 @@ const TOOLS: &[Tool] = &[
         action: "getNewsPseudoPagination",
         shape: Shape::Plain,
         args: &[
-            opt("offset", Ty::Int, "Items to skip (default 0).")
-                .sent_as("shown")
-                .or(Val::Int(0)),
+            opt(
+                "offset",
+                Ty::IntIn {
+                    min: 0,
+                    max: 100_000,
+                },
+                "Items to skip (default 0).",
+            )
+            .sent_as("shown")
+            .or(Val::Int(0)),
             opt("search", Ty::Str { max: 200 }, "Search in titles.").sent_as("searchName"),
             opt(
                 "from_date",
@@ -783,7 +854,8 @@ const TOOLS: &[Tool] = &[
         path: VOTE,
         action: "getVotingCard",
         shape: Shape::Plain,
-        args: &[req("id", Ty::Int, "Poll id from list_voting_invitations.")],
+        args: &[req("id", Ty::Id, "Poll id from list_voting_invitations.")
+            .own(row(&["list_voting_invitations", "list_votings"]))],
         fixed: &[
             top("voter", Val::Bool(true)),
             top("role_owner_id", Val::UserId),
@@ -811,11 +883,10 @@ const TOOLS: &[Tool] = &[
         path: TEMP_PASS,
         action: "getTemporaryPassModalData",
         shape: Shape::Plain,
-        args: &[req(
-            "pass_id",
-            Ty::Int,
-            "Pass id from list_temporary_passes.",
-        )],
+        args: &[
+            req("pass_id", Ty::Id, "Pass id from list_temporary_passes.")
+                .own(row(&["list_temporary_passes"])),
+        ],
         fixed: &[],
         owner: None,
     },
@@ -861,7 +932,7 @@ const TOOLS: &[Tool] = &[
         path: CARS,
         action: "getCarModalData",
         shape: Shape::Plain,
-        args: &[req("id", Ty::Int, "Car id from list_cars.")],
+        args: &[req("id", Ty::Id, "Car id from list_cars.").own(row(&["list_cars"]))],
         fixed: &[],
         owner: None,
     },
@@ -874,10 +945,16 @@ const TOOLS: &[Tool] = &[
         path: MSG,
         action: "viewMessage",
         shape: Shape::Plain,
-        args: &[
-            req("message_id", Ty::Int, "`message_id` from list_messages.").sent_as("id"),
-            req("id", Ty::Int, "`id` (the inbox record) from list_messages.").sent_as("record_id"),
-        ],
+        args: &[req(
+            "id",
+            Ty::Id,
+            "`id` of the row in list_messages or list_archived_messages.",
+        )
+        .sent_as("record_id")
+        .own(Own::Row {
+            lists: &["list_messages", "list_archived_messages"],
+            fill: &[("id", "message_id")],
+        })],
         fixed: &[],
         owner: None,
     },
@@ -893,7 +970,9 @@ const TOOLS: &[Tool] = &[
         action: "saveSupportRequest",
         shape: Shape::Plain,
         args: &[
-            req("hk_id", Ty::Int, HK_ID).sent_as("support_id"),
+            req("hk_id", Ty::Id, HK_ID)
+                .own(Own::Housekeeper)
+                .sent_as("support_id"),
             req(
                 "property_id",
                 Ty::Str { max: 64 },
@@ -901,7 +980,7 @@ const TOOLS: &[Tool] = &[
             ),
             req(
                 "property_type",
-                Ty::Int,
+                Ty::IntIn { min: 0, max: 4 },
                 "The property's address type, 0–4.",
             ),
             req("category", Ty::Int, "Category id, or -1 for other."),
@@ -950,7 +1029,7 @@ const TOOLS: &[Tool] = &[
         action: "saveComment",
         shape: Shape::Plain,
         args: &[
-            req("request_id", Ty::Int, "Support request id."),
+            req("request_id", Ty::Id, "Support request id.").own(row(&["list_support_requests"])),
             req("comment_text", Ty::Str { max: 2000 }, "The comment."),
             opt(
                 "resume",
@@ -973,7 +1052,7 @@ const TOOLS: &[Tool] = &[
         path: SUP,
         action: "changeStatus",
         shape: Shape::Plain,
-        args: &[req("id", Ty::Int, "Support request id.")],
+        args: &[req("id", Ty::Id, "Support request id.").own(row(&["list_support_requests"]))],
         // status 3 = closed; closed_status 2 = cancelled by the client.
         fixed: &[
             top("status", Val::Int(3)),
@@ -990,11 +1069,12 @@ const TOOLS: &[Tool] = &[
         action: "vote",
         shape: Shape::Plain,
         args: &[
-            req("voting_id", Ty::Int, "Poll id."),
-            req("question_id", Ty::Int, "Question id."),
+            req("voting_id", Ty::Id, "Poll id.")
+                .own(row(&["list_voting_invitations", "list_votings"])),
+            req("question_id", Ty::Id, "Question id."),
             req(
                 "proposition_id",
-                Ty::Int,
+                Ty::Id,
                 "The chosen proposition's id (not its code).",
             ),
         ],
@@ -1017,19 +1097,20 @@ const TOOLS: &[Tool] = &[
         action: "placeOrder",
         shape: Shape::PayLink,
         args: &[
-            req("hk_id", Ty::Int, HK_ID),
+            req("hk_id", Ty::Id, HK_ID).own(Own::Housekeeper),
             req(
                 "account_id",
-                Ty::Int,
+                Ty::Id,
                 "Personal account id (get_property `accounts[].id`).",
-            ),
+            )
+            .own(Own::Account),
             req("amount", Ty::Amount, "Amount in UAH, e.g. 1250.50."),
             req(
                 "provider",
                 Ty::OneOf(&["liqpay", "mono"]),
                 "\"liqpay\" or \"mono\".",
             ),
-            opt("invoice_id", Ty::Int, "The invoice this pays, if any.").sent_as("ref_invoice_id"),
+            opt("invoice_id", Ty::Id, "The invoice this pays, if any.").sent_as("ref_invoice_id"),
         ],
         fixed: &[],
         owner: None,
@@ -1044,13 +1125,15 @@ const TOOLS: &[Tool] = &[
         action: "getAccountingStatusPDF",
         shape: Shape::Plain,
         args: &[
-            req(
-                "property_id",
-                Ty::Int,
-                "Property `id` from list_properties.",
+            req("property_id", Ty::Id, "Property `id` from list_properties.")
+                .sent_as("user_property_apartment_id")
+                .own(Own::Property),
+            opt(
+                "mode",
+                Ty::IntIn { min: 1, max: 2 },
+                "1 owned (default), 2 rented.",
             )
-            .sent_as("user_property_apartment_id"),
-            opt("mode", Ty::Int, "1 owned (default), 2 rented.").or(Val::Int(1)),
+            .or(Val::Int(1)),
         ],
         fixed: &[],
         owner: None,
@@ -1063,11 +1146,10 @@ const TOOLS: &[Tool] = &[
         path: TEMP_PASS,
         action: "cancelPass",
         shape: Shape::Plain,
-        args: &[req(
-            "pass_id",
-            Ty::Int,
-            "Pass id from list_temporary_passes.",
-        )],
+        args: &[
+            req("pass_id", Ty::Id, "Pass id from list_temporary_passes.")
+                .own(row(&["list_temporary_passes"])),
+        ],
         fixed: &[],
         owner: None,
     },
@@ -1091,6 +1173,9 @@ pub fn list(allow_writes: bool) -> Value {
         .collect()
 }
 
+/// Writes that can't be undone from the dashboard.
+const DESTRUCTIVE: &[&str] = &["vote", "close_support_request", "cancel_temporary_pass"];
+
 fn describe(tool: &Tool) -> Value {
     let read = tool.access == Access::Read;
     json!({
@@ -1100,7 +1185,7 @@ fn describe(tool: &Tool) -> Value {
         // Hints let clients ask for stricter approval on writes.
         "annotations": {
             "readOnlyHint": read,
-            "destructiveHint": false,
+            "destructiveHint": DESTRUCTIVE.contains(&tool.name),
             "idempotentHint": read,
             "openWorldHint": true
         }
@@ -1123,11 +1208,13 @@ fn input_schema(tool: &Tool) -> Value {
     for arg in tool.args {
         let mut schema = match arg.ty {
             Ty::Int => json!({ "type": "integer" }),
+            Ty::Id => json!({ "type": "integer", "minimum": 1 }),
+            Ty::IntIn { min, max } => json!({ "type": "integer", "minimum": min, "maximum": max }),
             Ty::Str { max } => json!({ "type": "string", "minLength": 1, "maxLength": max }),
             Ty::Bool => json!({ "type": "boolean" }),
             Ty::Date | Ty::ChartDate => json!({ "type": "string", "format": "date" }),
             Ty::Amount => {
-                json!({ "type": "number", "exclusiveMinimum": 0, "maximum": MAX_PAY_AMOUNT })
+                json!({ "type": "number", "minimum": 0.01, "maximum": MAX_PAY_AMOUNT, "multipleOf": 0.01 })
             }
             Ty::OneOf(values) => json!({ "type": "string", "enum": values }),
             Ty::TimeSlot => json!({
@@ -1163,8 +1250,12 @@ struct Session {
 fn needs_user_id(tool: &Tool) -> bool {
     let is_user = |v: Val| matches!(v, Val::UserId | Val::UserIdStr);
     tool.fixed.iter().any(|f| is_user(f.val))
-        || tool.args.iter().any(|a| a.default.is_some_and(is_user))
+        || tool
+            .args
+            .iter()
+            .any(|a| a.default.is_some_and(is_user) || a.own.is_some())
         || tool.owner.is_some()
+        || tool.shape == Shape::PayLink
 }
 
 /// Dispatch a `tools/call`. Returns the pretty-printed JSON payload as text.
@@ -1185,13 +1276,17 @@ pub async fn call(name: &str, args: Value, allow_writes: bool) -> Result<String>
             0
         },
     };
+    let fill = check_owned(&client, tool, &args, session).await?;
     let data = if tool.shape == Shape::PayLink {
         pay_link(&client, tool, args, session).await?
     } else {
-        let params = build_params(tool, args, session);
+        let mut params = build_params(tool, args, session);
+        if let Value::Object(map) = &mut params {
+            map.extend(fill);
+        }
         let data = client.rpc(tool.path, tool.action, params).await?;
         match tool.owner {
-            Some(pointer) => keep_own_rows(data, pointer, session.user_id),
+            Some(pointer) => keep_own_rows(data, pointer, session.user_id)?,
             None => data,
         }
     };
@@ -1200,30 +1295,177 @@ pub async fn call(name: &str, args: Value, allow_writes: bool) -> Result<String>
 
 /// Drop table rows that belong to someone else (the owner's user id at
 /// `pointer` differs from ours): a second line of defence behind the filters,
-/// so only your own rows ever reach the model.
-fn keep_own_rows(mut data: Value, pointer: &str, user_id: i64) -> Value {
+/// so only your own rows ever reach the model. Fails closed when the response
+/// has no row list.
+fn keep_own_rows(mut data: Value, pointer: &str, user_id: i64) -> Result<Value> {
     let me = user_id.to_string();
-    let mine = |row: &Value| {
-        row.pointer(pointer)
-            .is_some_and(|id| id.as_i64() == Some(user_id) || id.as_str() == Some(me.as_str()))
-    };
-    let removed = match data.get_mut("result").and_then(Value::as_array_mut) {
-        Some(rows) => {
-            let before = rows.len();
-            rows.retain(mine);
-            before - rows.len()
-        }
-        None => 0,
-    };
+    let mine = |row: &Value| row.pointer(pointer).and_then(id_text).as_deref() == Some(me.as_str());
+    let rows = data
+        .get_mut("result")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| CheckDomError::Unexpected("no list of rows in the response".into()))?;
+    let before = rows.len();
+    rows.retain(mine);
+    let removed = before - rows.len();
     if removed > 0
         && let Value::Object(map) = &mut data
     {
+        // The server's total counted rows that are not yours.
+        map.remove("total");
         map.insert(
             "note".into(),
             json!(format!("{removed} rows that are not yours were removed")),
         );
     }
-    data
+    Ok(data)
+}
+
+/// An id as text, whether the API sent it as a number or a string.
+fn id_text(v: &Value) -> Option<String> {
+    v.as_i64()
+        .map(|n| n.to_string())
+        .or_else(|| v.as_str().map(str::to_string))
+}
+
+/// Check every argument that declares an owner (see [`Own`]) against your own
+/// data, and return the request fields to fill from your matching rows.
+async fn check_owned(
+    client: &CheckDomClient,
+    tool: &Tool,
+    valid: &Valid,
+    session: Session,
+) -> Result<Map<String, Value>> {
+    let mut fill = Map::new();
+    for arg in tool.args {
+        let (Some(own), Some(value)) = (arg.own, valid.args.get(arg.name)) else {
+            continue;
+        };
+        let wanted = id_text(value).unwrap_or_default();
+        let not_yours = || invalid(format!("{} {wanted} is not one of yours", arg.name));
+        match own {
+            Own::Housekeeper => {
+                let data = client
+                    .rpc(
+                        IDX,
+                        "getUserHousekeepers",
+                        json!({ "user_id": session.user_id }),
+                    )
+                    .await?;
+                if !ids_at(&data, "/housekeepers").contains(&wanted) {
+                    return Err(not_yours());
+                }
+            }
+            Own::Property => {
+                let mut ids = Vec::new();
+                for mode in [1, 2] {
+                    let data = client
+                        .rpc(
+                            PROP,
+                            "getUserHouses",
+                            json!({ "id": session.user_id, "mode": mode, "type": ROLE_PRIVATE }),
+                        )
+                        .await?;
+                    ids.extend(ids_at(&data, "/result"));
+                }
+                if !ids.contains(&wanted) {
+                    return Err(not_yours());
+                }
+            }
+            Own::Account => {
+                let mut ids = Vec::new();
+                for payfor in [1, 2] {
+                    let data = client
+                        .rpc(
+                            IDX,
+                            "getUserStatsDataByService",
+                            json!({ "payfor": payfor, "hk_address_id": "*" }),
+                        )
+                        .await?;
+                    ids.extend(ids_at(&data, "/accounts"));
+                }
+                if !ids.contains(&wanted) {
+                    return Err(not_yours());
+                }
+            }
+            Own::Row {
+                lists,
+                fill: from_row,
+            } => {
+                let mut found = None;
+                for list in lists {
+                    if let Some(row) = own_row(client, list, &wanted, session).await? {
+                        found = Some(row);
+                        break;
+                    }
+                }
+                let row = found.ok_or_else(not_yours)?;
+                for (key, field) in from_row {
+                    let v = row.get(*field).cloned().ok_or_else(|| {
+                        CheckDomError::Unexpected(format!("no {field} in your row"))
+                    })?;
+                    fill.insert((*key).into(), v);
+                }
+            }
+        }
+    }
+    Ok(fill)
+}
+
+/// The ids (`id` field) of the rows in the array at `pointer`.
+fn ids_at(data: &Value, pointer: &str) -> Vec<String> {
+    data.pointer(pointer)
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| r.get("id").and_then(id_text))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Most rows read while looking for one of your own records.
+const MAX_LOOKUP_PAGES: i64 = 20;
+
+/// Find your own row with this `id` in a list tool (which lists only your own
+/// rows), reading every page of a table.
+async fn own_row(
+    client: &CheckDomClient,
+    list: &str,
+    wanted: &str,
+    session: Session,
+) -> Result<Option<Value>> {
+    let tool = find(list).ok_or_else(|| invalid(format!("unknown list tool {list}")))?;
+    for page in 1..=MAX_LOOKUP_PAGES {
+        let args = match tool.shape {
+            Shape::Paginated => json!({ "page": page, "per_page": MAX_PER_PAGE }),
+            _ => json!({}),
+        };
+        let mut data = client
+            .rpc(
+                tool.path,
+                tool.action,
+                build_params(tool, validate(tool, args)?, session),
+            )
+            .await?;
+        if let Some(pointer) = tool.owner {
+            data = keep_own_rows(data, pointer, session.user_id)?;
+        }
+        let rows = ["result", "requests"]
+            .iter()
+            .find_map(|k| data.get(*k).and_then(Value::as_array))
+            .cloned()
+            .unwrap_or_default();
+        if let Some(row) = rows
+            .iter()
+            .find(|r| r.get("id").and_then(id_text).as_deref() == Some(wanted))
+        {
+            return Ok(Some(row.clone()));
+        }
+        if tool.shape != Shape::Paginated || (rows.len() as i64) < MAX_PER_PAGE {
+            break;
+        }
+    }
+    Ok(None)
 }
 
 /// Create a pending order and return the provider's hosted payment page, the
@@ -1247,9 +1489,9 @@ async fn pay_link(
         .await?;
     let order_id = placed
         .get("order_id")
-        .filter(|id| !id.is_null() && id.as_i64() != Some(-1))
-        .cloned()
-        .ok_or_else(|| invalid("CheckDom did not create the order"))?;
+        .and_then(id_text)
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) && id != "0")
+        .ok_or_else(|| CheckDomError::Unexpected("CheckDom did not create the order".into()))?;
 
     let url = if provider == "mono" {
         let data = client
@@ -1266,7 +1508,9 @@ async fn pay_link(
             .await?;
         liqpay_url(&data)
     }
-    .ok_or_else(|| invalid("CheckDom did not return a payment page for the order"))?;
+    .ok_or_else(|| {
+        CheckDomError::Unexpected("CheckDom did not return a payment page for the order".into())
+    })?;
 
     Ok(json!({ "order_id": order_id, "provider": provider, "pay_url": url }))
 }
@@ -1285,8 +1529,10 @@ fn order_params(tool: &Tool, valid: Valid, session: Session) -> Value {
 
 /// monobank's hosted payment page from `getMonoParams`.
 fn mono_url(data: &Value) -> Option<String> {
-    let url = data.pointer("/params/0/page_url")?.as_str()?;
-    url.starts_with("https://").then(|| url.to_string())
+    let raw = data.pointer("/params/0/page_url")?.as_str()?;
+    let url = reqwest::Url::parse(raw).ok()?;
+    (url.scheme() == "https" && url.host_str() == Some(MONO_HOST) && url.port().is_none())
+        .then(|| url.into())
 }
 
 /// LiqPay's hosted checkout URL from `getLiqpayWidgetParams` (`form[0].data`/`sig`).
@@ -1300,7 +1546,7 @@ fn liqpay_url(data: &Value) -> Option<String> {
 }
 
 fn invalid(msg: impl Into<String>) -> CheckDomError {
-    CheckDomError::Unexpected(msg.into())
+    CheckDomError::InvalidArgument(msg.into())
 }
 
 /// Drop bookkeeping fields the dashboard adds to responses, and the pay token.
@@ -1308,8 +1554,10 @@ fn strip_noise(mut data: Value) -> Value {
     if let Value::Object(map) = &mut data {
         map.remove("curVersionTime");
         map.remove("langData");
-        // A payment token for the dashboard's own pay widget; never handed to the model.
+        // Tokens for the dashboard's own pay widget and invoice links; never handed
+        // to the model.
         map.remove("payToken");
+        map.remove("token");
     }
     data
 }
@@ -1469,13 +1717,15 @@ fn to_ua_date(iso: &str) -> String {
 fn check_type(arg: &Arg, value: &Value) -> Result<()> {
     let ok = match arg.ty {
         Ty::Int => value.is_i64(),
+        Ty::Id => value.as_i64().is_some_and(|n| n > 0),
+        Ty::IntIn { min, max } => value.as_i64().is_some_and(|n| (min..=max).contains(&n)),
         Ty::Str { max } => value
             .as_str()
             .is_some_and(|s| !s.trim().is_empty() && s.chars().count() <= max),
         Ty::Bool => value.is_boolean(),
         Ty::Date | Ty::ChartDate => value.as_str().is_some_and(is_date),
         Ty::Amount => value.as_f64().is_some_and(|a| {
-            a > 0.0 && a <= MAX_PAY_AMOUNT && ((a * 100.0).round() - a * 100.0).abs() < 1e-6
+            (0.01..=MAX_PAY_AMOUNT).contains(&a) && ((a * 100.0).round() - a * 100.0).abs() < 1e-6
         }),
         Ty::OneOf(values) => value.as_str().is_some_and(|s| values.contains(&s)),
         Ty::TimeSlot => match value {
@@ -1497,11 +1747,13 @@ fn check_type(arg: &Arg, value: &Value) -> Result<()> {
             arg.name,
             match arg.ty {
                 Ty::Int => "an integer".to_string(),
+                Ty::Id => "a positive integer id".to_string(),
+                Ty::IntIn { min, max } => format!("an integer from {min} to {max}"),
                 Ty::Str { max } => format!("a non-empty string of at most {max} characters"),
                 Ty::Bool => "true or false".to_string(),
                 Ty::Date | Ty::ChartDate => "a date YYYY-MM-DD".to_string(),
                 Ty::Amount => format!(
-                    "an amount in UAH above 0 and at most {MAX_PAY_AMOUNT}, with at most 2 decimals"
+                    "an amount in UAH from 0.01 to {MAX_PAY_AMOUNT}, with at most 2 decimals"
                 ),
                 Ty::OneOf(values) => format!("one of {}", values.join(", ")),
                 Ty::TimeSlot => "{start_datetime, end_datetime} or null".to_string(),
@@ -1521,7 +1773,8 @@ mod tests {
         let mut m = Map::new();
         for arg in tool.args.iter().filter(|a| a.required) {
             let v = match arg.ty {
-                Ty::Int => json!(1),
+                Ty::Int | Ty::Id => json!(1),
+                Ty::IntIn { min, .. } => json!(min),
                 Ty::Str { .. } => json!("text"),
                 Ty::Bool => json!(true),
                 Ty::Date | Ty::ChartDate => json!("2026-11-02"),
@@ -1668,7 +1921,7 @@ mod tests {
             { "id": 3, "user": { "id": "4321" } },
             { "id": 4 }
         ]});
-        let kept = keep_own_rows(data, "/user/id", 4321);
+        let kept = keep_own_rows(data, "/user/id", 4321).unwrap();
         let ids: Vec<i64> = kept["result"]
             .as_array()
             .unwrap()
@@ -1677,12 +1930,20 @@ mod tests {
             .collect();
         assert_eq!(ids, [1, 3]);
         assert!(kept["note"].as_str().unwrap().contains("2 rows"));
+        assert!(
+            kept.get("total").is_none(),
+            "the server total counted other rows"
+        );
         let clean = keep_own_rows(
-            json!({ "result": [{ "user": { "id": 4321 } }] }),
+            json!({ "total": 1, "result": [{ "user": { "id": 4321 } }] }),
             "/user/id",
             4321,
-        );
+        )
+        .unwrap();
         assert!(clean.get("note").is_none());
+        assert_eq!(clean["total"], 1);
+        // No row list: fail closed rather than pass everything through.
+        assert!(keep_own_rows(json!({ "rows": [] }), "/user/id", 4321).is_err());
     }
 
     #[test]
@@ -1787,8 +2048,8 @@ mod tests {
     fn renamed_arguments_are_sent_under_the_api_name() {
         let p = params("list_support_properties", json!({ "hk_id": 9 }));
         assert_eq!(p, json!({ "hkId": 9, "userId": 4321 }));
-        let p = params("read_message", json!({ "message_id": 5, "id": 6 }));
-        assert_eq!(p, json!({ "id": 5, "record_id": 6 }));
+        let p = params("read_message", json!({ "id": 6 }));
+        assert_eq!(p, json!({ "record_id": 6 }));
         let p = params("list_news", Value::Null);
         assert_eq!(p, json!({ "shown": 0, "userId": 4321 }));
     }
@@ -1861,8 +2122,148 @@ mod tests {
     }
 
     #[test]
+    fn tools_that_send_the_user_id_resolve_it() {
+        // Regression: get_pay_link sent user_id 0 because it never resolved the id.
+        for tool in TOOLS {
+            let valid = validate(tool, minimal_args(tool)).unwrap();
+            let sent = if tool.shape == Shape::PayLink {
+                order_params(tool, valid, SESSION)
+            } else {
+                build_params(tool, valid, SESSION)
+            };
+            if sent.to_string().contains("4321") {
+                assert!(needs_user_id(tool), "{} sends the user id", tool.name);
+            }
+        }
+        assert!(needs_user_id(find("get_pay_link").unwrap()));
+    }
+
+    /// Id arguments that need no ownership check, and why.
+    const NOT_OWNED: &[(&str, &str)] = &[
+        // Public catalogues of a building manager.
+        ("list_support_subcategories", "category_id"),
+        ("get_support_schedule", "sub_category_id"),
+        // Filters inside a building, property or balance that is itself checked
+        // (hk_id / property_id) or is your own summary.
+        ("get_debt_status", "house_id"),
+        ("get_amount_to_pay", "account_id"),
+        ("get_balance", "hk_address_id"),
+        // Must match the poll in `voting_id`, which is checked.
+        ("vote", "question_id"),
+        ("vote", "proposition_id"),
+        // Only a reference on the order; the account is checked.
+        ("get_pay_link", "invoice_id"),
+        // Optional context, the request is filed under your own user id.
+        ("create_support_request", "subscriber_id"),
+        // "<address_id>_<apartment>" from list_support_properties; the request is
+        // filed under your own user id with a checked hk_id.
+        ("create_support_request", "property_id"),
+    ];
+
+    #[test]
+    fn every_id_argument_is_checked_for_ownership() {
+        for tool in TOOLS {
+            for arg in tool.args {
+                let id_like = arg.name == "id" || arg.name.ends_with("_id");
+                if id_like && arg.own.is_none() {
+                    assert!(
+                        NOT_OWNED.contains(&(tool.name, arg.name)),
+                        "{}.{} takes an id without an ownership check",
+                        tool.name,
+                        arg.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ownership_lookups_name_real_list_tools() {
+        for tool in TOOLS {
+            for arg in tool.args {
+                if let Some(Own::Row { lists, .. }) = arg.own {
+                    for list in lists {
+                        let l = find(list).unwrap_or_else(|| panic!("{list} is not a tool"));
+                        assert_eq!(l.access, Access::Read, "{list}");
+                        assert!(
+                            l.args.iter().all(|a| !a.required),
+                            "{list} needs no arguments"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn read_message_takes_your_row_and_fills_the_message_id() {
+        let p = params("read_message", json!({ "id": 6 }));
+        assert_eq!(p, json!({ "record_id": 6 }));
+        let tool = find("read_message").unwrap();
+        assert!(matches!(
+            tool.args[0].own,
+            Some(Own::Row {
+                fill: [("id", "message_id")],
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn no_argument_collides_with_a_fixed_field() {
+        for tool in TOOLS {
+            for arg in tool.args {
+                assert!(
+                    !tool
+                        .fixed
+                        .iter()
+                        .any(|f| f.key == arg.key && f.place == Place::Top),
+                    "{}.{}",
+                    tool.name,
+                    arg.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn destructive_hints_mark_irreversible_writes() {
+        for name in DESTRUCTIVE {
+            let tool = find(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(tool.access, Access::Write);
+            assert_eq!(describe(tool)["annotations"]["destructiveHint"], true);
+        }
+        assert_eq!(
+            describe(find("get_balance").unwrap())["annotations"]["destructiveHint"],
+            false
+        );
+    }
+
+    #[test]
+    fn ids_and_ranges_are_checked() {
+        let tool = find("get_car").unwrap();
+        for bad in [json!(0), json!(-1), json!("7"), json!(1.5)] {
+            assert!(validate(tool, json!({ "id": bad })).is_err(), "{bad}");
+        }
+        let tool = find("get_settlements_chart").unwrap();
+        let base = json!({ "hk_id": 1, "chart_type": 0, "from_date": "2026-01-01", "to_date": "2026-02-01" });
+        assert!(validate(tool, base.clone()).is_ok());
+        let mut v = base;
+        v["chart_type"] = json!(3);
+        assert!(validate(tool, v).is_err());
+        assert!(validate(find("list_properties").unwrap(), json!({ "mode": 3 })).is_err());
+    }
+
+    #[test]
+    fn ids_are_read_as_text() {
+        let data = json!({ "housekeepers": [{ "id": 12 }, { "id": "34" }, { "name": "x" }] });
+        assert_eq!(ids_at(&data, "/housekeepers"), ["12", "34"]);
+        assert!(ids_at(&data, "/missing").is_empty());
+    }
+
+    #[test]
     fn noise_fields_and_pay_token_are_stripped() {
-        let data = json!({ "result": [], "curVersionTime": 1, "langData": {}, "payToken": "t" });
+        let data = json!({ "result": [], "curVersionTime": 1, "langData": {}, "payToken": "t", "token": "u" });
         assert_eq!(strip_noise(data), json!({ "result": [] }));
     }
 
@@ -1885,10 +2286,17 @@ mod tests {
         let tool = find("get_pay_link").unwrap();
         let base = json!({ "hk_id": 1, "account_id": 2, "amount": 1250.5, "provider": "mono" });
         assert!(validate(tool, base.clone()).is_ok());
+        for ok in [json!(0.01), json!(99.99), json!(100)] {
+            let mut v = base.clone();
+            v["amount"] = ok.clone();
+            assert!(validate(tool, v).is_ok(), "{ok}");
+        }
         for bad in [
             json!(0),
             json!(-5),
             json!(10.005),
+            json!(1e-9),
+            json!(0.001),
             json!("100"),
             json!(2_000_000),
         ] {
@@ -1923,10 +2331,19 @@ mod tests {
             mono_url(&mono).as_deref(),
             Some("https://pay.monobank.ua/abc")
         );
-        assert_eq!(
-            mono_url(&json!({ "params": [{ "page_url": "javascript:alert(1)" }] })),
-            None
-        );
+        for bad in [
+            "javascript:alert(1)",
+            "http://pay.monobank.ua/abc",
+            "https://evil.example/pay",
+            "https://pay.monobank.ua.evil.example/x",
+            "https://pay.monobank.ua:8443/x",
+        ] {
+            assert_eq!(
+                mono_url(&json!({ "params": [{ "page_url": bad }] })),
+                None,
+                "{bad}"
+            );
+        }
         let liq = json!({ "form": [{ "data": "eyJh+/=", "sig": "s/g=" }] });
         assert_eq!(
             liqpay_url(&liq).as_deref(),

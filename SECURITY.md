@@ -40,8 +40,11 @@ checkdom-mcp is a local tool that acts as *you* against *your own* CheckDom acco
   Each tool calls one fixed controller and action; arguments can never change which action is
   called, and `create_support_request` passes only an allowlist of documented fields.
 - List tools cap `per_page` at 100.
-- List tools send the dashboard's own-rows filters, and support requests are additionally
-  checked row by row, so only your own data is returned.
+- List tools send the same parameters as the dashboard pages they mirror; support request rows
+  are also checked against your user id.
+- Every id argument (building manager, property, personal account, invoice, request, pass, car,
+  poll, message) is checked against your own data before the request is sent, so instructions
+  planted in text the model reads can't point a tool at someone else's records.
 - `get_pay_link` (a write tool) creates a pending order and returns the provider's hosted page;
   it never charges anything and never touches saved cards. The dashboard's internal
   `payToken` is removed from every response.

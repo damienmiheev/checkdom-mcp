@@ -16,10 +16,12 @@ linked docs; do not duplicate them here.
 - **No passthrough.** Never add a tool that takes a free-form controller path, action name, or
   raw request body. Each tool maps to one fixed `(controller, action)` and sends only the
   typed arguments it declares; unknown arguments are rejected. No free-form `filters`.
-- **Only your own rows.** A list tool sends the same hidden own-rows filters as the dashboard
-  page it mirrors (`role_id`, `role_owner_id`, …; see docs/API.md), and where rows name their
-  owner, sets `owner` so other people's rows are dropped. Verify a new list tool live: its
-  `total` must match what the dashboard shows you.
+- **Only your own data.** A list tool sends the same hidden filters as the dashboard page it
+  mirrors (`role_id`, `role_owner_id`, …), and where rows name their owner, sets `owner` so
+  other people's rows are dropped. Every id argument declares what it must belong to
+  (`.own(...)`: housekeeper, property, account, or a row of one of your lists), or is listed
+  with a reason in `NOT_OWNED`; a test enforces this. Verify a new list tool live: its `total`
+  must match what the dashboard shows you.
 - **Credentials.** The password is used once by `login` and never stored, logged, or sent to
   the model. Only the session token is persisted, `0600` in a `0700` directory. Never log the
   token or put it in an error message.

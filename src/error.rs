@@ -21,6 +21,11 @@ pub enum CheckDomError {
     #[error("login failed: {0}")]
     Login(String),
 
+    /// A tool argument was rejected before any request was sent (wrong type,
+    /// unknown key, or an id that isn't yours).
+    #[error("{0}")]
+    InvalidArgument(String),
+
     /// The response was shaped in a way we did not expect.
     #[error("unexpected response from CheckDom: {0}")]
     Unexpected(String),
