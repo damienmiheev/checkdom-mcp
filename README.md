@@ -168,3 +168,5 @@ Rules for AI coding agents are in [AGENTS.md](AGENTS.md).
 
 Dual-licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT) at your
 option.
+
+<!-- path-filter test, not for merge -->
