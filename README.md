@@ -35,9 +35,8 @@ download, login and connecting a client, with a setup prompt you can copy.
 
 ## Status
 
-Early **v0.1**. Runs on macOS, Linux and Windows; CI builds and tests all three. Releases
-(signed archives for all six platforms) are described in [RELEASE.md](RELEASE.md); until the
-first one is published, build from source (below).
+**v0.1.0** is the first release. Runs on macOS, Linux and Windows (arm64 and x86_64); CI builds
+and tests all three.
 
 Checked against a real account on 2026-10-31: `login`, `status`, and every read tool for which
 the account had data (`get_voting` and `get_car` had nothing to open). The write tools are
@@ -47,8 +46,14 @@ The API surface is mapped in [`docs/API.md`](docs/API.md).
 
 ## Install
 
-Requires a [Rust toolchain](https://rustup.rs); `rustup` installs the pinned version from
-`rust-toolchain.toml` (currently 1.99.1) on first build.
+**From a release (recommended):** download the archive for your platform from the
+[latest release](https://github.com/damienmiheev/checkdom-mcp/releases/latest), verify it, and
+unpack it; [GETTING_STARTED.md](GETTING_STARTED.md) has the step-by-step for each platform.
+Every release is signed (`SHA256SUMS.minisig`, key in [`minisign.pub`](minisign.pub)) and has a
+build provenance attestation ([RELEASE.md](RELEASE.md)).
+
+**From source:** requires a [Rust toolchain](https://rustup.rs); `rustup` installs the pinned
+version from `rust-toolchain.toml` (currently 1.99.1) on first build.
 
 ```bash
 git clone https://github.com/damienmiheev/checkdom-mcp
