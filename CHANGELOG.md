@@ -6,10 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## 0.1.0 (2026-10-31)
+
 ### Added
 - Release pipeline (RELEASE.md): signed archives for macOS, Linux and Windows (arm64 and
   x86_64) with licence notices and SBOMs, `SHA256SUMS` signed with minisign after the owner's
   approval, and build provenance attestations.
+- GETTING_STARTED.md: setup for people and AI agents, with a copy-paste setup prompt.
 - API drift check: `scripts/api-inventory.py` inventories the dashboard's API calls into
   `docs/api-inventory.txt`; a weekly workflow opens an issue when they change, and the
   `checkdom-api-drift` project skill describes how to bring the server back in line.

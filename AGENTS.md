@@ -83,6 +83,7 @@ affect the build or tests — and never for anything a test reads (README.md has
 | Topic | Where |
 |---|---|
 | Install, login, connect to a client, tool list | README.md |
+| Step-by-step setup for people and agents, copy-paste prompt | GETTING_STARTED.md |
 | Security model, supply chain, reporting | SECURITY.md |
 | Reverse-engineered CheckDom API | docs/API.md |
 | API drift check (weekly workflow, inventory, how to react) | scripts/api-inventory.py, docs/api-inventory.txt, `.claude/skills/checkdom-api-drift/` |
