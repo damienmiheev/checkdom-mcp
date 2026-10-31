@@ -22,5 +22,8 @@ Thumbs.db
 credentials.toml
 *.credentials.toml
 
+# Internal design notes and session handoffs; never published
+/internal/
+
 # Claude Code local settings
 .claude/settings.local.json

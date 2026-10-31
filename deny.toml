@@ -1,39 +1,40 @@
-# cargo-deny configuration. Run locally with `cargo deny check`.
-# CI runs this as a soft gate for now (see .github/workflows/ci.yml).
+# cargo-deny configuration. Run: cargo deny check
+# Docs: https://embarkstudios.github.io/cargo-deny/
+# CI runs this as a required check on every push and pull request, and weekly.
+
+[graph]
+all-features = true
 
 [advisories]
-version = 2
+# RustSec advisories; vulnerable, unmaintained and yanked crates fail the check.
 yanked = "deny"
-# Add RustSec advisory IDs here with a reason if one must be temporarily allowed.
+# Ignored only with a reason; recheck every entry on each dependency upgrade.
 ignore = []
 
 [licenses]
-version = 2
-# Permissive licenses plus MPL-2.0 and Unicode, which the TLS/parsing stack pulls in.
+# Permissive licenses plus file-level-copyleft MPL-2.0 (SECURITY.md § Supply chain).
 allow = [
-    "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # webpki-roots ships Mozilla's CA list under the Community Data License (permissive).
+    "CDLA-Permissive-2.0",
     "ISC",
-    "BSL-1.0",
+    "MIT",
+    # option-ext via dirs; file-level copyleft, used unmodified.
     "MPL-2.0",
     "Unicode-3.0",
     "Zlib",
-    "OpenSSL",
 ]
-confidence-threshold = 0.8
-
-# `ring` ships a bundled license that cargo-deny reads from a file.
-[[licenses.clarify]]
-name = "ring"
-expression = "ISC AND MIT AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+confidence-threshold = 0.9
+# The list is a policy, not an inventory: don't warn about licenses no crate uses yet.
+unused-allowed-license = "allow"
 
 [bans]
+# Duplicates come from transitive dependencies (e.g. base64, syn); reported, not fatal.
 multiple-versions = "warn"
-wildcards = "allow"
+wildcards = "deny"
 
 [sources]
 unknown-registry = "deny"

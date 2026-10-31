@@ -5,7 +5,7 @@
 
 use crate::client::CheckDomClient;
 use crate::error::{CheckDomError, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // RPC controller paths (see docs/API.md).
 const IDX: &str = "/modules/private/api/apiIndexController.php";
@@ -16,6 +16,31 @@ const SUP: &str = "/modules/supportRequests/api/apiSupportRequest.php";
 const MSG: &str = "/modules/internalMessages/api/apiInternalMessages.php";
 const VOTE: &str = "/modules/voting/api/apiVotingController.php";
 
+/// Largest page a list tool asks for, so one call can't pull an unbounded result.
+const MAX_PER_PAGE: i64 = 100;
+/// `saveSupportRequest` accepts a description of 1–999 characters.
+const MAX_DESCRIPTION_CHARS: usize = 999;
+
+/// Fields of `saveSupportRequest` (docs/API.md) that `create_support_request` passes
+/// through. Anything else is rejected, so the tool sends only what it documents.
+const SUPPORT_REQUEST_FIELDS: &[&str] = &[
+    "user_id",
+    "author_user_id",
+    "property_id",
+    "property_type",
+    "type",
+    "support_id",
+    "category",
+    "sub_category",
+    "description",
+    "status",
+    "user_full_name",
+    "request_entity_type",
+    "request_entity_id",
+    "subscriber_id",
+    "schedule",
+];
+
 /// The tool list advertised over `tools/list`.
 pub fn list(allow_writes: bool) -> Value {
     let mut tools = read_tools();
@@ -23,6 +48,14 @@ pub fn list(allow_writes: bool) -> Value {
         tools.extend(write_tools());
     }
     Value::Array(tools)
+}
+
+/// Whether `name` is a tool this server knows, read or write.
+pub fn exists(name: &str) -> bool {
+    read_tools()
+        .iter()
+        .chain(write_tools().iter())
+        .any(|t| t["name"] == name)
 }
 
 /// Dispatch a `tools/call`. Returns the pretty-printed JSON payload as text.
@@ -50,13 +83,23 @@ pub async fn call(name: &str, args: Value, allow_writes: bool) -> Result<String>
             client.rpc(DEBT, "getDebtStatus", params).await?
         }
         "list_invoices" => {
-            client.rpc(INV, "getIncomingInvoicesPagination", pagination(&args)).await?
+            client
+                .rpc(INV, "getIncomingInvoicesPagination", pagination(&args))
+                .await?
         }
         "list_support_requests" => {
-            client.rpc(SUP, "getSupportRequestsPagination", pagination(&args)).await?
+            client
+                .rpc(SUP, "getSupportRequestsPagination", pagination(&args))
+                .await?
         }
         "get_support_request_comments" => {
-            client.rpc(SUP, "getCommentsByRequestId", json!({ "id": req_i64(&args, "id")? })).await?
+            client
+                .rpc(
+                    SUP,
+                    "getCommentsByRequestId",
+                    json!({ "id": req_i64(&args, "id")? }),
+                )
+                .await?
         }
         "list_messages" => {
             let mut p = pagination(&args);
@@ -66,16 +109,20 @@ pub async fn call(name: &str, args: Value, allow_writes: bool) -> Result<String>
             }
             client.rpc(MSG, "getMessagesPagination", p).await?
         }
-        "list_votings" => client.rpc(VOTE, "getVotingsPagination", pagination(&args)).await?,
+        "list_votings" => {
+            client
+                .rpc(VOTE, "getVotingsPagination", pagination(&args))
+                .await?
+        }
 
         "create_support_request" => {
-            let params = as_object(args)?;
+            let params = support_request_params(args)?;
             client.rpc(SUP, "saveSupportRequest", params).await?
         }
         "comment_on_support_request" => {
             let params = json!({
                 "request_id": req_i64(&args, "request_id")?,
-                "comment_text": req_str(&args, "comment_text")?,
+                "comment_text": req_nonempty_str(&args, "comment_text")?,
                 "comment_type": 0,
             });
             client.rpc(SUP, "saveComment", params).await?
@@ -88,7 +135,10 @@ pub async fn call(name: &str, args: Value, allow_writes: bool) -> Result<String>
 }
 
 fn is_write_tool(name: &str) -> bool {
-    matches!(name, "create_support_request" | "comment_on_support_request")
+    matches!(
+        name,
+        "create_support_request" | "comment_on_support_request"
+    )
 }
 
 fn read_tools() -> Vec<Value> {
@@ -145,8 +195,8 @@ fn read_tools() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": {
-                    "page": { "type": "integer", "default": 1 },
-                    "per_page": { "type": "integer", "default": 25 },
+                    "page": { "type": "integer", "minimum": 1, "default": 1 },
+                    "per_page": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
                     "role_owner_id": { "type": "integer", "description": "Required by the endpoint; from list_housekeepers." },
                     "role_id": { "type": "integer", "description": "Required by the endpoint." }
                 },
@@ -179,12 +229,20 @@ fn write_tools() -> Vec<Value> {
                     "support_id": { "type": "integer", "description": "Housekeeper id." },
                     "category": { "type": "integer" },
                     "sub_category": { "type": "integer" },
-                    "description": { "type": "string", "maxLength": 999 },
+                    "description": { "type": "string", "minLength": 1, "maxLength": 999 },
+                    "type": { "type": "integer" },
+                    "status": { "type": "integer" },
+                    "user_full_name": { "type": "string" },
                     "request_entity_type": { "type": "integer" },
-                    "subscriber_id": { "type": "integer" }
+                    "request_entity_id": { "type": "integer" },
+                    "subscriber_id": { "type": "integer" },
+                    "schedule": {
+                        "type": ["object", "null"],
+                        "description": "Time slot {start_datetime, end_datetime} for sub-categories that need one."
+                    }
                 },
                 "required": ["user_id", "property_id", "support_id", "category", "description"],
-                "additionalProperties": true
+                "additionalProperties": false
             }),
         ),
         tool(
@@ -194,7 +252,7 @@ fn write_tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "request_id": { "type": "integer", "description": "Support request id." },
-                    "comment_text": { "type": "string" }
+                    "comment_text": { "type": "string", "minLength": 1 }
                 },
                 "required": ["request_id", "comment_text"],
                 "additionalProperties": false
@@ -211,8 +269,8 @@ fn pagination_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "page": { "type": "integer", "default": 1 },
-            "per_page": { "type": "integer", "default": 25 },
+            "page": { "type": "integer", "minimum": 1, "default": 1 },
+            "per_page": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
             "filters": { "type": "object", "description": "Optional column filters." }
         },
         "additionalProperties": false
@@ -220,8 +278,12 @@ fn pagination_schema() -> Value {
 }
 
 fn pagination(args: &Value) -> Value {
-    let page = args.get("page").and_then(Value::as_i64).unwrap_or(1);
-    let per_page = args.get("per_page").and_then(Value::as_i64).unwrap_or(25);
+    let page = args.get("page").and_then(Value::as_i64).unwrap_or(1).max(1);
+    let per_page = args
+        .get("per_page")
+        .and_then(Value::as_i64)
+        .unwrap_or(25)
+        .clamp(1, MAX_PER_PAGE);
     json!({
         "pagination": { "page": page, "perPage": per_page, "orderBy": { "param": "id", "dir": "desc" } },
         "filters": args.get("filters").cloned().unwrap_or_else(|| json!({}))
@@ -238,18 +300,42 @@ fn req_i64(args: &Value, key: &str) -> Result<i64> {
         .ok_or_else(|| CheckDomError::Unexpected(format!("missing or non-integer argument: {key}")))
 }
 
-fn req_str(args: &Value, key: &str) -> Result<String> {
+fn req_nonempty_str(args: &Value, key: &str) -> Result<String> {
     args.get(key)
         .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
-        .ok_or_else(|| CheckDomError::Unexpected(format!("missing or non-string argument: {key}")))
+        .ok_or_else(|| {
+            CheckDomError::Unexpected(format!("missing or empty string argument: {key}"))
+        })
 }
 
-fn as_object(args: Value) -> Result<Value> {
-    match args {
-        Value::Object(_) => Ok(args),
-        _ => Err(CheckDomError::Unexpected("expected an object of arguments".into())),
+/// Validate `create_support_request` arguments against [`SUPPORT_REQUEST_FIELDS`].
+fn support_request_params(args: Value) -> Result<Value> {
+    let Value::Object(map) = args else {
+        return Err(CheckDomError::Unexpected(
+            "expected an object of arguments".into(),
+        ));
+    };
+    if let Some(key) = map
+        .keys()
+        .find(|k| !SUPPORT_REQUEST_FIELDS.contains(&k.as_str()))
+    {
+        return Err(CheckDomError::Unexpected(format!(
+            "unsupported argument for create_support_request: {key}"
+        )));
     }
+    let args = Value::Object(map);
+    for key in ["user_id", "property_id", "support_id", "category"] {
+        req_i64(&args, key)?;
+    }
+    let description = req_nonempty_str(&args, "description")?;
+    if description.chars().count() > MAX_DESCRIPTION_CHARS {
+        return Err(CheckDomError::Unexpected(format!(
+            "description is longer than {MAX_DESCRIPTION_CHARS} characters"
+        )));
+    }
+    Ok(args)
 }
 
 #[cfg(test)]
@@ -277,5 +363,40 @@ mod tests {
         let p = pagination(&json!({}));
         assert_eq!(p["pagination"]["page"], 1);
         assert_eq!(p["pagination"]["perPage"], 25);
+    }
+
+    #[test]
+    fn pagination_is_clamped() {
+        let p = pagination(&json!({ "page": -3, "per_page": 100_000 }));
+        assert_eq!(p["pagination"]["page"], 1);
+        assert_eq!(p["pagination"]["perPage"], MAX_PER_PAGE);
+    }
+
+    #[test]
+    fn support_request_rejects_unknown_fields() {
+        let ok = json!({
+            "user_id": 1, "property_id": 2, "support_id": 3, "category": 4,
+            "description": "Лампа в під'їзді не світить"
+        });
+        assert!(support_request_params(ok.clone()).is_ok());
+
+        let mut smuggled = ok.clone();
+        smuggled["action"] = json!("changeStatus");
+        assert!(support_request_params(smuggled).is_err());
+
+        let mut empty = ok.clone();
+        empty["description"] = json!("  ");
+        assert!(support_request_params(empty).is_err());
+
+        let mut long = ok;
+        long["description"] = json!("я".repeat(MAX_DESCRIPTION_CHARS + 1));
+        assert!(support_request_params(long).is_err());
+    }
+
+    #[test]
+    fn every_listed_tool_exists_and_nothing_else() {
+        assert!(exists("list_votings"));
+        assert!(exists("comment_on_support_request"));
+        assert!(!exists("payByClientCard"));
     }
 }

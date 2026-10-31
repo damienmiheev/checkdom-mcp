@@ -60,7 +60,9 @@ async fn cmd_login() -> Result<()> {
         print!("CIF or email: ");
         std::io::stdout().flush()?;
         let mut username = String::new();
-        std::io::stdin().read_line(&mut username).context("reading username")?;
+        std::io::stdin()
+            .read_line(&mut username)
+            .context("reading username")?;
         let password = rpassword::prompt_password("Password: ").context("reading password")?;
         Ok((username.trim().to_string(), password))
     })
@@ -71,9 +73,25 @@ async fn cmd_login() -> Result<()> {
         anyhow::bail!("no username entered");
     }
 
-    let token = client::CheckDomClient::new()?.login(&username, &password).await?;
+    let token = client::CheckDomClient::new()?
+        .login(&username, &password)
+        .await?;
+    drop(password);
+    // A failed login can still set a guest `session` cookie; only keep a token
+    // that actually authenticates.
+    if !client::CheckDomClient::with_token(token.clone())?
+        .check_session()
+        .await?
+    {
+        anyhow::bail!(
+            "login failed: CheckDom did not accept the new session; check your CIF/email and password"
+        );
+    }
     config::save_token(&token)?;
-    println!("Logged in. Session token stored at {}", config::credentials_path()?.display());
+    println!(
+        "Logged in. Session token stored at {}",
+        config::credentials_path()?.display()
+    );
     Ok(())
 }
 
@@ -89,9 +107,14 @@ fn cmd_logout() -> Result<()> {
 async fn cmd_status() -> Result<()> {
     match config::load_token()? {
         None => println!("Not logged in. Run `checkdom-mcp login`."),
-        Some(token) => match client::CheckDomClient::with_token(token)?.check_session().await {
+        Some(token) => match client::CheckDomClient::with_token(token)?
+            .check_session()
+            .await
+        {
             Ok(true) => println!("Session is valid."),
-            Ok(false) => println!("A token is stored but the session is expired. Run `checkdom-mcp login`."),
+            Ok(false) => {
+                println!("A token is stored but the session is expired. Run `checkdom-mcp login`.")
+            }
             Err(e) => println!("A token is stored but the check failed: {e}"),
         },
     }

@@ -34,13 +34,13 @@ API surface is mapped in [`docs/API.md`](docs/API.md); more tools are easy to ad
 
 ## Install
 
-Requires a [Rust toolchain](https://rustup.rs) (see `rust-toolchain.toml` for the pinned
-version).
+Requires a [Rust toolchain](https://rustup.rs); `rustup` installs the pinned version from
+`rust-toolchain.toml` (currently 1.99.1) on first build.
 
 ```bash
 git clone https://github.com/damienmiheev/checkdom-mcp
 cd checkdom-mcp
-cargo build --release
+cargo build --release --locked
 # binary at ./target/release/checkdom-mcp
 ```
 
@@ -52,14 +52,23 @@ model or the MCP protocol:
 ```bash
 checkdom-mcp login
 # prompts for your CIF-or-email and password, performs the dashboard login,
-# and stores ONLY the resulting session token locally (0600, in your config dir)
+# checks the new session works, and stores ONLY the resulting session token
+# locally (0600, in your config dir)
 ```
 
 - `checkdom-mcp logout` removes the stored token.
 - `checkdom-mcp status` shows whether a valid session is stored.
 
-The token is written to `~/.config/checkdom-mcp/credentials.toml` (or the platform
-equivalent) with owner-only permissions. It is a session token, not your password — the
+The token is written with owner-only permissions (`0600`, directory `0700`) to
+`credentials.toml` in your config directory:
+
+| OS | Path |
+|---|---|
+| macOS | `~/Library/Application Support/checkdom-mcp/credentials.toml` |
+| Linux | `$XDG_CONFIG_HOME/checkdom-mcp/credentials.toml` (default `~/.config/…`) |
+| Windows | `%APPDATA%\checkdom-mcp\credentials.toml` |
+
+ It is a session token, not your password — the
 password is used only during `login` and is never stored.
 
 ## Connect it to Claude
@@ -107,7 +116,8 @@ To allow the write tools (file / comment on support requests), add the opt-in fl
 | `comment_on_support_request` | Adds a comment to an existing request |
 
 Without `--allow-writes`, the write tools are not registered and any attempt returns a clear
-"writes are disabled" error.
+"writes are disabled" error. `create_support_request` accepts only the documented
+`saveSupportRequest` fields and rejects anything else.
 
 ## Security
 
@@ -117,9 +127,11 @@ service itself are not this project's to disclose.
 
 ## Contributing
 
-Issues and PRs welcome. CI runs `cargo fmt`, `cargo clippy -D warnings`, tests, and a
-`cargo deny` supply-chain audit. Please keep the tool surface typed and least-privilege, and
-never add a tool that completes a payment or stores a password.
+Issues and PRs welcome; `main` is protected and changes land through pull requests. CI runs
+`cargo fmt`, `cargo clippy -D warnings`, unit and end-to-end tests, a release build,
+`cargo deny`, and CodeQL. Please keep the tool surface typed and least-privilege, add tests
+with every change, and never add a tool that completes a payment or stores a password.
+Rules for AI coding agents are in [AGENTS.md](AGENTS.md).
 
 ## License
 

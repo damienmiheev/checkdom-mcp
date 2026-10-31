@@ -19,6 +19,19 @@ All notable changes to this project are documented here. The format is based on
   (fmt, clippy `-D warnings`, test, release build), Dependabot, `cargo deny`,
   `forbid(unsafe_code)`.
 
-### Notes
-- `Cargo.lock` is committed once a local build has been run; until then CI resolves
-  dependencies fresh and the `--locked` flag is not used.
+- Unit tests for response parsing, CSRF/cookie extraction, argument validation and token-file
+  permissions, plus end-to-end tests that drive the built binary over stdio.
+- CodeQL workflow (Rust and Actions); AGENTS.md / CLAUDE.md agent rules and project skills.
+
+### Changed
+- Toolchain 1.99.1, edition 2024, `rust-version = "1.99"`; dependencies updated.
+- `Cargo.lock` is committed and CI builds with `--locked`; `cargo deny` is a required check.
+- MCP: invalid JSON gets a `-32700` parse error, non-object or method-less messages get
+  `-32600`, unknown tools get `-32602`, and the protocol version is negotiated.
+
+### Security
+- Tool arguments can no longer override the RPC `action` (they were merged after it).
+- `create_support_request` accepts only documented `saveSupportRequest` fields.
+- The token file is created `0600` (directory `0700`) instead of being chmod-ed after writing.
+- HTTPS-only client with connect and request timeouts; `per_page` capped at 100.
+- `login` verifies the new session before storing it.

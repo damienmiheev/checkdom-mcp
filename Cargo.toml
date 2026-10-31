@@ -1,8 +1,8 @@
 [package]
 name = "checkdom-mcp"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
+edition = "2024"
+rust-version = "1.99"
 description = "Unofficial Model Context Protocol (MCP) server for the CheckDom resident dashboard (checkdom.in.ua): read your bills, support requests, messages and votes, and file requests, from an AI assistant."
 authors = ["damienmiheev and the checkdom-mcp contributors"]
 license = "MIT OR Apache-2.0"
@@ -13,23 +13,32 @@ keywords = ["mcp", "checkdom", "osbb", "claude", "ai"]
 categories = ["command-line-utilities", "api-bindings"]
 
 [dependencies]
-tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 anyhow = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-regex = "1.11"
-dirs = "5.0"
-rpassword = "7.3"
-toml = "0.8"
+regex = "1.13"
+dirs = "7.0"
+rpassword = "7.5"
+toml = "1.1"
 
 [profile.release]
-strip = true
 lto = "thin"
+codegen-units = 1
+strip = "symbols"
 
 [lints.rust]
 unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# See CLAUDE.md: no unwrap/expect outside tests (clippy.toml allows them in tests).
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"

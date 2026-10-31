@@ -34,5 +34,16 @@ pub enum CheckDomError {
     Json(#[from] serde_json::Error),
 }
 
+impl CheckDomError {
+    /// Prefix an `Unexpected` error with where it happened; other variants
+    /// already say what to do and are returned unchanged.
+    pub fn with_context(self, context: &str) -> Self {
+        match self {
+            Self::Unexpected(msg) => Self::Unexpected(format!("{msg} from {context}")),
+            other => other,
+        }
+    }
+}
+
 /// Convenience alias for results that fail with [`CheckDomError`].
 pub type Result<T> = std::result::Result<T, CheckDomError>;
