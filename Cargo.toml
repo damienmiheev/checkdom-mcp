@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "api-bindings"]
 
 [dependencies]
 tokio = { version = "1.54", features = ["rt", "macros", "io-std", "io-util"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "form", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde_json = "1.0"
 anyhow = "1.0"
 thiserror = "2.0"
