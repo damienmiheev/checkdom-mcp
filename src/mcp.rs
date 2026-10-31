@@ -7,7 +7,7 @@
 use crate::tools;
 use anyhow::Result;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// MCP protocol versions this server speaks, newest first. The server only
 /// uses `tools` with text content, which is the same in all of them.
@@ -23,44 +23,110 @@ const INVALID_PARAMS: i64 = -32602;
 /// JSON-RPC error as `(code, message)`.
 type RpcError = (i64, String);
 
+/// Longest accepted input line. Longer lines are answered with an error and
+/// discarded, so one message can't grow memory without bound.
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+
 /// Run the server until stdin closes.
 pub async fn serve(allow_writes: bool) -> Result<()> {
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
 
-    tracing::info!(allow_writes, "checkdom-mcp server started");
+    eprintln!(
+        "checkdom-mcp: server started (writes {})",
+        if allow_writes { "enabled" } else { "disabled" }
+    );
 
-    while let Some(line) = lines.next_line().await? {
-        let Some(response) = handle_line(&line, allow_writes).await else {
-            continue;
+    let mut line = Vec::new();
+    while read_line_capped(&mut stdin, &mut line).await? {
+        let response = if line.len() > MAX_LINE_BYTES {
+            eprintln!("checkdom-mcp: discarded an input line over {MAX_LINE_BYTES} bytes");
+            Some(error_response(
+                Value::Null,
+                INVALID_REQUEST,
+                "message too large",
+            ))
+        } else {
+            handle_line(&line, allow_writes).await
         };
-        let mut out = serde_json::to_string(&response)?;
-        out.push('\n');
-        stdout.write_all(out.as_bytes()).await?;
-        stdout.flush().await?;
+        if let Some(response) = response {
+            let mut out = serde_json::to_vec(&response)?;
+            out.push(b'\n');
+            stdout.write_all(&out).await?;
+            stdout.flush().await?;
+        }
     }
 
-    tracing::info!("stdin closed; shutting down");
+    eprintln!("checkdom-mcp: stdin closed; shutting down");
     Ok(())
 }
 
+/// Read one `\n`-terminated line into `buf`, keeping at most
+/// `MAX_LINE_BYTES + 1` bytes of it (enough to tell it was too long).
+/// Returns `false` at end of input.
+async fn read_line_capped<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<bool> {
+    buf.clear();
+    let mut read_any = false;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return Ok(read_any);
+        }
+        read_any = true;
+        let (part, done) = match chunk.iter().position(|b| *b == b'\n') {
+            Some(i) => (&chunk[..i], Some(i + 1)),
+            None => (chunk, None),
+        };
+        let room = (MAX_LINE_BYTES + 1).saturating_sub(buf.len());
+        buf.extend_from_slice(&part[..part.len().min(room)]);
+        let consumed = done.unwrap_or(chunk.len());
+        reader.consume(consumed);
+        if done.is_some() {
+            return Ok(true);
+        }
+    }
+}
+
 /// Handle one line of input. Returns the response to write, or `None` for
-/// blank lines and notifications.
-async fn handle_line(line: &str, allow_writes: bool) -> Option<Value> {
-    let line = line.trim();
-    if line.is_empty() {
+/// blank lines, notifications and client responses.
+async fn handle_line(line: &[u8], allow_writes: bool) -> Option<Value> {
+    if line.trim_ascii().is_empty() {
         return None;
     }
 
-    let msg: Value = match serde_json::from_str(line) {
+    let msg: Value = match serde_json::from_slice(line) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("invalid JSON on stdin: {e}");
+            eprintln!("checkdom-mcp: invalid JSON on stdin: {e}");
             return Some(error_response(Value::Null, PARSE_ERROR, "parse error"));
         }
     };
 
-    let Some(obj) = msg.as_object() else {
+    match msg {
+        // JSON-RPC batch (MCP 2025-03-26): one array of replies, none if all
+        // were notifications.
+        Value::Array(batch) if batch.is_empty() => {
+            Some(error_response(Value::Null, INVALID_REQUEST, "empty batch"))
+        }
+        Value::Array(batch) => {
+            let mut replies = Vec::new();
+            for m in batch {
+                if let Some(r) = handle_message(m, allow_writes).await {
+                    replies.push(r);
+                }
+            }
+            (!replies.is_empty()).then_some(Value::Array(replies))
+        }
+        m => handle_message(m, allow_writes).await,
+    }
+}
+
+/// Handle one JSON-RPC message (not a batch).
+async fn handle_message(msg: Value, allow_writes: bool) -> Option<Value> {
+    let Value::Object(obj) = msg else {
         return Some(error_response(
             Value::Null,
             INVALID_REQUEST,
@@ -68,13 +134,27 @@ async fn handle_line(line: &str, allow_writes: bool) -> Option<Value> {
         ));
     };
 
-    // Requests carry an `id`; notifications do not and get no response.
-    let Some(id) = obj.get("id").cloned() else {
-        tracing::debug!("notification: {:?}", obj.get("method"));
-        return None;
-    };
+    let method = obj.get("method").and_then(Value::as_str);
+    let id = obj.get("id").cloned();
 
-    let Some(method) = obj.get("method").and_then(Value::as_str) else {
+    // A response from the client (to a request we never send): never answered.
+    if method.is_none() && (obj.contains_key("result") || obj.contains_key("error")) {
+        return None;
+    }
+    // Notifications carry no `id` and get no response.
+    let id = id?;
+    // MCP ids are strings or integers, never null.
+    if !(id.is_string() || id.is_i64() || id.is_u64()) {
+        return Some(error_response(Value::Null, INVALID_REQUEST, "invalid id"));
+    }
+    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Some(error_response(
+            id,
+            INVALID_REQUEST,
+            "jsonrpc must be \"2.0\"",
+        ));
+    }
+    let Some(method) = method else {
         return Some(error_response(id, INVALID_REQUEST, "missing method"));
     };
 
@@ -150,7 +230,7 @@ mod tests {
     use super::*;
 
     async fn reply(line: &str) -> Value {
-        handle_line(line, false).await.unwrap()
+        handle_line(line.as_bytes(), false).await.unwrap()
     }
 
     #[test]
@@ -177,9 +257,69 @@ mod tests {
 
     #[tokio::test]
     async fn blank_lines_and_notifications_get_no_reply() {
-        assert!(handle_line("   ", false).await.is_none());
+        assert!(handle_line(b"   ", false).await.is_none());
         let n = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
-        assert!(handle_line(n, false).await.is_none());
+        assert!(handle_line(n.as_bytes(), false).await.is_none());
+        // A client response is not answered either.
+        let r = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        assert!(handle_line(r.as_bytes(), false).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_is_a_parse_error_not_a_crash() {
+        let r = handle_line(b"\xff\xfe{}", false).await.unwrap();
+        assert_eq!(r["error"]["code"], PARSE_ERROR);
+    }
+
+    #[tokio::test]
+    async fn null_or_object_ids_and_wrong_version_are_invalid() {
+        for line in [
+            r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#,
+            r#"{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}"#,
+            r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#,
+            r#"{"id":1,"method":"ping"}"#,
+        ] {
+            assert_eq!(
+                reply(line).await["error"]["code"],
+                INVALID_REQUEST,
+                "{line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn batches_get_one_array_of_replies() {
+        let r = reply(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":"b","method":"nope"}]"#,
+        )
+        .await;
+        let replies = r.as_array().unwrap();
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["id"], 1);
+        assert_eq!(replies[1]["error"]["code"], METHOD_NOT_FOUND);
+
+        assert_eq!(reply("[]").await["error"]["code"], INVALID_REQUEST);
+        let only_notifications = r#"[{"jsonrpc":"2.0","method":"notifications/initialized"}]"#;
+        assert!(
+            handle_line(only_notifications.as_bytes(), false)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn long_lines_are_capped_and_the_next_line_still_reads() {
+        let mut input = vec![b'x'; MAX_LINE_BYTES + 10];
+        input.extend_from_slice(b"\nnext\nlast");
+        let mut reader = &input[..];
+        let mut buf = Vec::new();
+        assert!(read_line_capped(&mut reader, &mut buf).await.unwrap());
+        assert_eq!(buf.len(), MAX_LINE_BYTES + 1);
+        assert!(read_line_capped(&mut reader, &mut buf).await.unwrap());
+        assert_eq!(buf, b"next");
+        assert!(read_line_capped(&mut reader, &mut buf).await.unwrap());
+        assert_eq!(buf, b"last");
+        assert!(!read_line_capped(&mut reader, &mut buf).await.unwrap());
     }
 
     #[tokio::test]
@@ -191,7 +331,8 @@ mod tests {
 
     #[tokio::test]
     async fn non_object_and_missing_method_are_invalid_requests() {
-        assert_eq!(reply("[1,2]").await["error"]["code"], INVALID_REQUEST);
+        let r = reply("[1,2]").await;
+        assert_eq!(r[0]["error"]["code"], INVALID_REQUEST);
         let r = reply(r#"{"jsonrpc":"2.0","id":"a"}"#).await;
         assert_eq!(r["error"]["code"], INVALID_REQUEST);
         assert_eq!(r["id"], "a");

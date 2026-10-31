@@ -19,8 +19,8 @@ Thumbs.db
 .env.*
 
 # Local credential / session-token store written by `checkdom-mcp login` — NEVER commit
+session-token
 credentials.toml
-*.credentials.toml
 
 # Internal design notes and session handoffs; never published
 /internal/

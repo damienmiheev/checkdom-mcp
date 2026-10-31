@@ -29,7 +29,18 @@ All notable changes to this project are documented here. The format is based on
 - MCP: invalid JSON gets a `-32700` parse error, non-object or method-less messages get
   `-32600`, unknown tools get `-32602`, and the protocol version is negotiated.
 
+- reqwest 0.13 (`rustls` with aws-lc-rs and the OS trust store).
+- Six direct dependencies instead of thirteen (172 → 134 crates): clap, regex, tracing,
+  tracing-subscriber, toml, serde and dirs replaced by small, tested code.
+- Tools are one typed table; every tool validates its arguments and rejects unknown ones;
+  free-form `filters` removed; tools carry MCP annotations.
+- The token is stored as a plain `session-token` file (was `credentials.toml`).
+- MCP: JSON-RPC batches, id and version checks; client responses are not answered; invalid
+  UTF-8 and lines over 1 MiB get an error instead of stopping the server.
+
 ### Security
+- Redirects are followed only to checkdom.in.ua, so a 307/308 can't replay the password.
+- The token file is written atomically and never through a symlink.
 - Tool arguments can no longer override the RPC `action` (they were merged after it).
 - `create_support_request` accepts only documented `saveSupportRequest` fields.
 - The token file is created `0600` (directory `0700`) instead of being chmod-ed after writing.

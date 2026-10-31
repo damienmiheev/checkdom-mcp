@@ -26,8 +26,7 @@ fn command(home: &PathBuf, args: &[&str]) -> Command {
     cmd.args(args)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("APPDATA", home)
-        .env("RUST_LOG", "warn");
+        .env("APPDATA", home);
     cmd
 }
 
@@ -176,4 +175,23 @@ fn status_and_logout_without_a_stored_token() {
     let logout = run("logout", &["logout"]);
     assert!(logout.status.success());
     assert!(String::from_utf8_lossy(&logout.stdout).contains("No stored token"));
+}
+
+#[test]
+fn version_help_and_usage_errors() {
+    let version = run("version", &["--version"]);
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout).trim(),
+        format!("checkdom-mcp {}", env!("CARGO_PKG_VERSION"))
+    );
+
+    let help = run("help", &["--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--allow-writes"));
+
+    // A typo in the write flag must not silently start a read-only (or writable) server.
+    let typo = run("typo", &["serve", "--allow-write"]);
+    assert_eq!(typo.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&typo.stderr).contains("unexpected arguments"));
 }

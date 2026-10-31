@@ -8,11 +8,12 @@ linked docs; do not duplicate them here.
 - **No payment execution.** Never add a tool or code path that pays, charges a card, or places
   an order (`payByClientCard`, `placeOrder`, LiqPay/Mono widget flows). A payment-related tool
   may at most return a pay link for the human to open.
-- **Writes stay opt-in.** Every tool that changes CheckDom state is listed in `write_tools()`,
-  matched by `is_write_tool()`, and refused unless the server runs with `--allow-writes`.
+- **Writes stay opt-in.** Every tool is a row of `TOOLS` in `src/tools.rs`; a tool that
+  changes CheckDom state has `access: Access::Write`, which hides it from `tools/list` and
+  refuses it unless the server runs with `--allow-writes`.
 - **No passthrough.** Never add a tool that takes a free-form controller path, action name, or
   raw request body. Each tool maps to one fixed `(controller, action)` and sends only the
-  fields it documents (see `SUPPORT_REQUEST_FIELDS`).
+  typed arguments it declares; unknown arguments are rejected. No free-form `filters`.
 - **Credentials.** The password is used once by `login` and never stored, logged, or sent to
   the model. Only the session token is persisted, `0600` in a `0700` directory. Never log the
   token or put it in an error message.
@@ -40,7 +41,8 @@ linked docs; do not duplicate them here.
   `config.rs` / the MCP loop.
 - No `unwrap()`/`expect()` outside tests; where an invariant makes one safe, use
   `#[expect(clippy::expect_used, reason = "...")]`.
-- New dependency = justify it in the PR (why, size, maintenance, license). `cargo deny` must pass.
+- Keep dependencies few (six direct today). New dependency = justify it in the PR (why,
+  size, maintenance, license, what it would take to do without). `cargo deny` must pass.
 - Tool names and input schemas are a public contract for MCP clients; changing one is a
   breaking change and goes in CHANGELOG.md.
 

@@ -9,47 +9,83 @@ mod mcp;
 mod tools;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use std::process::ExitCode;
 
-#[derive(Parser)]
-#[command(name = "checkdom-mcp", version, about)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
+const USAGE: &str = "\
+Unofficial MCP server for the CheckDom resident dashboard (checkdom.in.ua)
 
-#[derive(Subcommand)]
+Usage: checkdom-mcp <COMMAND>
+
+Commands:
+  login                  Log in interactively and store a session token locally
+  logout                 Remove the stored session token
+  status                 Show whether a valid session is stored
+  serve [--allow-writes] Run the MCP server over stdio; --allow-writes enables the
+                         tools that modify data (create / comment on support requests)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version";
+
+#[derive(Debug, PartialEq)]
 enum Command {
-    /// Log in interactively and store a session token locally.
     Login,
-    /// Remove the stored session token.
     Logout,
-    /// Show whether a valid session is stored.
     Status,
-    /// Run the MCP server over stdio.
-    Serve {
-        /// Enable tools that modify data (create / comment on support requests).
-        #[arg(long)]
-        allow_writes: bool,
-    },
+    Serve { allow_writes: bool },
+    Help,
+    Version,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Logs to stderr; stdout is reserved for the MCP JSON stream.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+/// Parse the arguments after the program name.
+fn parse_args(args: &[String]) -> std::result::Result<Command, String> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args.as_slice() {
+        ["login"] => Ok(Command::Login),
+        ["logout"] => Ok(Command::Logout),
+        ["status"] => Ok(Command::Status),
+        ["serve"] => Ok(Command::Serve {
+            allow_writes: false,
+        }),
+        ["serve", "--allow-writes"] => Ok(Command::Serve { allow_writes: true }),
+        [] | ["-h" | "--help" | "help"] => Ok(Command::Help),
+        ["-V" | "--version"] => Ok(Command::Version),
+        [cmd, ..] => Err(format!("unexpected arguments starting at '{cmd}'")),
+    }
+}
 
-    match Cli::parse().command {
+// One request at a time on stdio: a single-threaded runtime is enough.
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let command = match parse_args(&args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let result = match command {
+        Command::Help => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        Command::Version => {
+            println!("checkdom-mcp {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Command::Login => cmd_login().await,
         Command::Logout => cmd_logout(),
         Command::Status => cmd_status().await,
+        // Logs go to stderr; stdout is reserved for the MCP JSON stream.
         Command::Serve { allow_writes } => mcp::serve(allow_writes).await,
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -90,7 +126,7 @@ async fn cmd_login() -> Result<()> {
     config::save_token(&token)?;
     println!(
         "Logged in. Session token stored at {}",
-        config::credentials_path()?.display()
+        config::token_path()?.display()
     );
     Ok(())
 }
@@ -119,4 +155,46 @@ async fn cmd_status() -> Result<()> {
         },
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> std::result::Result<Command, String> {
+        parse_args(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn parses_every_command() {
+        assert_eq!(parse(&["login"]), Ok(Command::Login));
+        assert_eq!(parse(&["logout"]), Ok(Command::Logout));
+        assert_eq!(parse(&["status"]), Ok(Command::Status));
+        assert_eq!(
+            parse(&["serve"]),
+            Ok(Command::Serve {
+                allow_writes: false
+            })
+        );
+        assert_eq!(
+            parse(&["serve", "--allow-writes"]),
+            Ok(Command::Serve { allow_writes: true })
+        );
+        assert_eq!(parse(&[]), Ok(Command::Help));
+        assert_eq!(parse(&["--help"]), Ok(Command::Help));
+        assert_eq!(parse(&["-V"]), Ok(Command::Version));
+    }
+
+    #[test]
+    fn rejects_unknown_or_misplaced_arguments() {
+        for bad in [
+            &["serve", "--allow-write"][..],
+            &["--allow-writes", "serve"],
+            &["login", "--allow-writes"],
+            &["serve", "--allow-writes", "extra"],
+            &["pay"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+    }
 }
