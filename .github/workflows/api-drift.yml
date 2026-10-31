@@ -1,0 +1,69 @@
+name: API drift
+
+# The CheckDom API is unofficial: once a week, compare the dashboard's public
+# scripts with docs/api-inventory.txt and open (or update) an issue when they
+# differ. See .claude/skills/checkdom-api-drift/SKILL.md for what to do then.
+on:
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  inventory:
+    name: Compare the dashboard API with the inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # Third-party actions are pinned to commit SHAs (SECURITY.md § Supply chain).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test the inventory script
+        run: python3 -I -m unittest discover -s scripts
+      - name: Compare
+        id: compare
+        run: |
+          rc=0
+          python3 -I scripts/api-inventory.py --check > drift.diff || rc=$?
+          cat drift.diff
+          # 0 = no change, 1 = drift, anything else = the check itself failed.
+          if [[ $rc -gt 1 ]]; then exit "$rc"; fi
+          echo "drift=$([[ $rc -eq 1 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Open or update the drift issue
+        if: steps.compare.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="CheckDom API drift detected"
+          {
+            echo "The dashboard's scripts no longer match \`docs/api-inventory.txt\` ([run]($RUN_URL))."
+            echo
+            echo "Follow \`.claude/skills/checkdom-api-drift/SKILL.md\`: check the changed actions"
+            echo "against \`src/tools.rs\`, update tools, tests and docs, then regenerate the inventory."
+            echo
+            echo '```diff'
+            head -c 60000 drift.diff
+            echo '```'
+          } > body.md
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [[ -n "$number" ]]; then
+            gh issue comment "$number" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi

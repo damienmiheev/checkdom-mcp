@@ -27,3 +27,6 @@ credentials.toml
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Python bytecode (scripts/)
+__pycache__/
