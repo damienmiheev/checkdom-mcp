@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- API drift check: `scripts/api-inventory.py` inventories the dashboard's API calls into
+  `docs/api-inventory.txt`; a weekly workflow opens an issue when they change, and the
+  `checkdom-api-drift` project skill describes how to bring the server back in line.
 - 33 more read tools, all checked against a real account: balance, properties, amount to pay,
   debt radar, reporting charts (settlements, cash flow), bank accounts, services, invoices,
   payments and payment codes, support request lookups (recipients, categories,

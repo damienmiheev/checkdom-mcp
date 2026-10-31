@@ -85,6 +85,7 @@ affect the build or tests — and never for anything a test reads (README.md has
 | Install, login, connect to a client, tool list | README.md |
 | Security model, supply chain, reporting | SECURITY.md |
 | Reverse-engineered CheckDom API | docs/API.md |
+| API drift check (weekly workflow, inventory, how to react) | scripts/api-inventory.py, docs/api-inventory.txt, `.claude/skills/checkdom-api-drift/` |
 | CLI (`login` / `logout` / `status` / `serve`) | src/main.rs |
 | MCP stdio loop (JSON-RPC 2.0) | src/mcp.rs |
 | Tool definitions, gating, argument validation | src/tools.rs |

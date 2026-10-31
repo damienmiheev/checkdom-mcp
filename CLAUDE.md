@@ -10,3 +10,5 @@ The rules for every agent are in AGENTS.md; they apply to Claude in full.
   from it; use it when writing, reviewing, or refactoring code.
 - `rust-guidelines` — Microsoft's Pragmatic Rust Guidelines. Use it when writing or reviewing
   Rust. AGENTS.md wins where they differ.
+- `checkdom-api-drift` — find and fix changes in CheckDom's unofficial API (the weekly drift
+  issue, failing tools, or a new tool for a dashboard feature).

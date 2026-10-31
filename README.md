@@ -214,6 +214,10 @@ skip the build. Please keep the tool surface typed and least-privilege, add test
 change, and never add a tool that completes a payment or stores a password.
 Rules for AI coding agents are in [AGENTS.md](AGENTS.md).
 
+Because the CheckDom API is unofficial, a weekly workflow compares the dashboard's public scripts
+with [`docs/api-inventory.txt`](docs/api-inventory.txt) and opens an issue when they differ;
+`python3 scripts/api-inventory.py --check` runs the same check locally.
+
 ## License
 
 Dual-licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT) at your
