@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDEs / editors
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+
+# Local credential / session-token store written by `checkdom-mcp login` — NEVER commit
+credentials.toml
+*.credentials.toml
+
+# Claude Code local settings
+.claude/settings.local.json
