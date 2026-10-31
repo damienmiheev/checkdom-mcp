@@ -32,8 +32,9 @@ checked against your own data before the request is sent.
 
 ## Status
 
-Early **v0.1**, not yet released: build from source (below). Runs on macOS, Linux and
-Windows; CI builds and tests all three.
+Early **v0.1**. Runs on macOS, Linux and Windows; CI builds and tests all three. Releases
+(signed archives for all six platforms) are described in [RELEASE.md](RELEASE.md); until the
+first one is published, build from source (below).
 
 Checked against a real account on 2026-10-31: `login`, `status`, and every read tool for which
 the account had data (`get_voting` and `get_car` had nothing to open). The write tools are

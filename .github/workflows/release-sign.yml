@@ -1,0 +1,164 @@
+# Signs a tag's draft release (RELEASE.md § Releasing). The Release build
+# starts it after making the draft; run it by hand with the tag otherwise.
+#
+# `check` has no secrets. It ties everything to the tag's Release build run:
+# the tag is on main and names the Cargo version, the run built that commit,
+# and the draft's archives match the run's SHA256SUMS. Its summary shows the
+# checksums the owner is about to approve.
+#
+# `sign` then waits for the owner's approval in the protected `release`
+# environment, which holds the minisign key (only runs from main may use it).
+# It runs no repository code and no third-party action: GitHub's
+# download-artifact, then minisign. It signs SHA256SUMS, checks the signature
+# against minisign.pub at the tag, and uploads SHA256SUMS.minisig to the draft.
+# It publishes nothing: the owner presses Publish afterwards.
+name: Release sign
+run-name: Sign ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag whose draft release to sign, e.g. v0.1.0
+        required: true
+      run:
+        description: The tag's Release build run id (optional; found from the tag otherwise)
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-sign-${{ inputs.tag }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Check ${{ inputs.tag }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # contents: write only because GitHub shows draft releases to tokens that
+    # can write. This job runs main's code and holds no keys; it changes nothing.
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      public-key: ${{ steps.check.outputs.public-key }}
+    env:
+      TAG: ${{ inputs.tag }}
+      RUN_INPUT: ${{ inputs.run }}
+    steps:
+      # Third-party actions are pinned to commit SHAs (SECURITY.md § Supply chain).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Check the tag, the draft and the Release build
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not v<major>.<minor>.<patch>"; exit 1; }
+          [[ -z $RUN_INPUT || $RUN_INPUT =~ ^[0-9]+$ ]] || { echo "::error::run must be a number"; exit 1; }
+          [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ] ||
+            { echo "::error::$TAG has no draft release (published already, or the Release build hasn't made it)"; exit 1; }
+          commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          git merge-base --is-ancestor "$commit" HEAD || { echo "::error::$TAG ($commit) is not on main"; exit 1; }
+          [ "v$(scripts/release-info.sh version "$commit")" = "$TAG" ] ||
+            { echo "::error::$TAG does not match the version in Cargo.toml at $commit"; exit 1; }
+          if [ -n "$RUN_INPUT" ]; then
+            run=$RUN_INPUT
+            # Started by the run's last job: wait until it has finished.
+            gh run watch "$run" --exit-status --interval 10 > /dev/null || { echo "::error::Release build $run failed"; exit 1; }
+          else
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-build.yml/runs?head_sha=$commit&per_page=100" \
+              --jq "[.workflow_runs[] | select(.head_branch == \"$TAG\" and .conclusion == \"success\")][0].id // empty")
+            [ -n "$run" ] || { echo "::error::no successful Release build of $TAG at $commit"; exit 1; }
+          fi
+          facts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '"\(.path) \(.head_sha) \(.head_branch) \(.conclusion)"')
+          [ "$facts" = ".github/workflows/release-build.yml $commit $TAG success" ] ||
+            { echo "::error::run $run is not a successful Release build of $TAG at $commit ($facts)"; exit 1; }
+          echo "RUN=$run" >> "$GITHUB_ENV"
+          echo "COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "public-key=$(scripts/release-info.sh signing-key "$commit")" >> "$GITHUB_OUTPUT"
+      - name: Download and check the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          out=$RUNNER_TEMP/release
+          mkdir -p "$out"
+          # Artifacts can't change after upload, so the run's SHA256SUMS ties
+          # the draft's archives to this build.
+          gh run download "$RUN" -n SHA256SUMS -D "$out"
+          gh release download "$TAG" -D "$out" -p '*.tar.gz' -p '*.zip'
+          (cd "$out" && sha256sum --check --strict SHA256SUMS)
+          files=("$out"/*.tar.gz "$out"/*.zip)
+          [ "${#files[@]}" = "$(wc -l < "$out/SHA256SUMS")" ] ||
+            { echo "::error::the draft has archives that the run's SHA256SUMS doesn't list"; exit 1; }
+          mkdir "$RUNNER_TEMP/to-sign"
+          cp "$out/SHA256SUMS" "$RUNNER_TEMP/to-sign/"
+          {
+            echo "### $TAG at \`$COMMIT\`, Release build [$RUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN)"
+            echo "Approving the \`sign\` job signs these checksums:"
+            echo '```'
+            cat "$out/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: to-sign
+          path: ${{ runner.temp }}/to-sign/
+          retention-days: 1
+          if-no-files-found: error
+
+  sign:
+    name: Sign ${{ inputs.tag }}
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag }}
+      PUBLIC_KEY: ${{ needs.check.outputs.public-key }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: to-sign
+          path: ${{ runner.temp }}/release
+      - name: Install minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign > /dev/null
+      - name: Sign SHA256SUMS
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          [ -n "$MINISIGN_KEY" ] && [ -n "$MINISIGN_PASSWORD" ] ||
+            { echo "::error::MINISIGN_KEY or MINISIGN_PASSWORD is not set in the release environment"; exit 1; }
+          keys=$RUNNER_TEMP/keys
+          trap 'rm -rf "$keys"' EXIT
+          mkdir -m 700 "$keys"
+          printf '%s\n' "$MINISIGN_KEY" > "$keys/release.key"
+          cd "$RUNNER_TEMP/release"
+          # minisign reads the password from stdin when it isn't a terminal.
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -Sm SHA256SUMS -s "$keys/release.key" -t "checkdom-mcp ${TAG#v}"
+          rm -rf "$keys"
+          # The signature must check against minisign.pub at the tag.
+          minisign -Vm SHA256SUMS -P "$PUBLIC_KEY"
+      - name: Upload to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP/release"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber SHA256SUMS.minisig
+          {
+            echo "### $TAG signed"
+            echo "Check the draft, then publish: $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
+          } >> "$GITHUB_STEP_SUMMARY"

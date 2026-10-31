@@ -62,6 +62,10 @@ checkdom-mcp is a local tool that acts as *you* against *your own* CheckDom acco
 
 ## Supply chain
 
+- Releases are built only by GitHub Actions from a tagged commit on `main` (RELEASE.md): six
+  platform archives with licence notices and an SBOM each, `SHA256SUMS` signed with minisign
+  (`minisign.pub`) after the owner's approval in a protected environment that admins can't
+  bypass, and a Sigstore build provenance attestation for every archive.
 - Third-party GitHub Actions are pinned to commit SHAs, checkouts don't persist the token,
   and workflows run with read-only `contents` permission. Dependabot proposes grouped updates
   weekly (Cargo and Actions), which CI re-checks.
