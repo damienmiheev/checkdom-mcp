@@ -42,8 +42,10 @@ and return `data.result[]` + `data.total`.
 
 ### Auth
 
-- Login: `POST /login` (form-urlencoded) with `_csrf-landing` (scraped from `GET /`),
-  `LoginForm[username]` (CIF or email), `LoginForm[password]`.
+- Login: RPC `userLogin` with `{login, pass}` (CIF or email, password) on
+  `/modules/front/api/loginController.php` — the same JSON envelope as every other call, no
+  CSRF token (verified live 2026-10-31). The HTML form posting to `/login` is a dead path:
+  `POST /login` is answered `301 → /login/`, which drops the body.
 - Sets cookies: `session` (the token), `name`, `surname`, `roles`, `currentRole`.
 - `currentRole` / `roles` identify the active role (resident vs housekeeper); many calls
   take `role_id` + `role_owner_id` explicitly.

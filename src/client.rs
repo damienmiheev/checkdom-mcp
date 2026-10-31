@@ -6,14 +6,16 @@
 
 use crate::config;
 use crate::error::{CheckDomError, Result};
-use reqwest::cookie::{CookieStore, Jar};
+use reqwest::header::{HeaderMap, SET_COOKIE};
 use reqwest::{Client, Url};
 use serde_json::{Value, json};
-use std::sync::Arc;
 use std::time::Duration;
 
 const BASE: &str = "https://checkdom.in.ua";
 const HOST: &str = "checkdom.in.ua";
+/// The login RPC the dashboard's login page calls (`userLogin`). The HTML form
+/// that posts to `/login` is not how the site logs in.
+const LOGIN_RPC: &str = "/modules/front/api/loginController.php";
 const MAX_REDIRECTS: usize = 5;
 const USER_AGENT: &str = concat!("checkdom-mcp/", env!("CARGO_PKG_VERSION"));
 /// Upper bound for one whole request, so a stalled server can't hang a tool call.
@@ -51,50 +53,34 @@ impl CheckDomClient {
         Self::with_token(token)
     }
 
-    /// Perform the login flow and return the session token.
+    /// Log in with the dashboard's `userLogin` RPC and return the session token,
+    /// which CheckDom sets as the `session` cookie on the response.
     pub async fn login(&self, username: &str, password: &str) -> Result<String> {
-        // A dedicated client with a cookie jar, so the CSRF cookie set by the
-        // landing page is sent back with the login POST.
-        let jar = Arc::new(Jar::default());
-        let http = http_builder().cookie_provider(jar.clone()).build()?;
-
-        // 1. Fetch the landing page and read the hidden CSRF token.
-        let landing = http
-            .get(BASE)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        let csrf = extract_csrf(&landing).ok_or_else(|| {
-            CheckDomError::Login("could not find the CSRF token on the login page".into())
-        })?;
-
-        // 2. Submit the login form.
-        let resp = http
-            .post(format!("{BASE}/login"))
-            .form(&[
-                ("_csrf-landing", csrf.as_str()),
-                ("LoginForm[username]", username),
-                ("LoginForm[password]", password),
-            ])
+        let resp = self
+            .http
+            .post(format!("{BASE}{LOGIN_RPC}"))
+            .json(&rpc_body(
+                "userLogin",
+                json!({ "login": username, "pass": password }),
+            ))
             .send()
             .await?;
-        // Drain the body; the cookies we care about are in the jar.
-        let _ = resp.text().await?;
+        let status = resp.status();
+        let session = session_from_set_cookie(resp.headers());
+        let text = resp.text().await?;
 
-        // 3. Read the `session` cookie the jar captured.
-        let url = Url::parse(BASE).map_err(|e| CheckDomError::Unexpected(e.to_string()))?;
-        let session = jar
-            .cookies(&url)
-            .and_then(|hv| hv.to_str().ok().map(str::to_owned))
-            .and_then(|cookies| cookie_value(&cookies, "session"))
-            .ok_or_else(|| {
-                CheckDomError::Login(
-                    "no session cookie returned — check your CIF/email and password".into(),
-                )
-            })?;
-        Ok(session)
+        match parse_rpc_response(status, &text) {
+            Ok(_) => {}
+            Err(CheckDomError::Api { .. }) => {
+                return Err(CheckDomError::Login(
+                    "CheckDom rejected the CIF/email or password".into(),
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+        session.ok_or_else(|| {
+            CheckDomError::Login("CheckDom accepted the login but set no session cookie".into())
+        })
     }
 
     /// Call an RPC action and return its `data` payload on success.
@@ -203,38 +189,17 @@ fn parse_rpc_response(status: reqwest::StatusCode, body: &str) -> Result<Value> 
     }
 }
 
-/// Read one cookie value out of a `k=v; k2=v2` header string.
-fn cookie_value(header: &str, name: &str) -> Option<String> {
-    header.split(';').find_map(|part| {
-        let (k, v) = part.trim().split_once('=')?;
-        (k == name).then(|| v.to_string())
-    })
-}
-
-/// Extract the hidden `_csrf-landing` token from the login page HTML: the
-/// `value` attribute of the tag that has `name="_csrf-landing"`, in either
-/// attribute order.
-fn extract_csrf(html: &str) -> Option<String> {
-    html.match_indices(r#"name="_csrf-landing""#)
-        .find_map(|(at, _)| {
-            let start = html[..at].rfind('<')?;
-            let end = at + html[at..].find('>')?;
-            attr_value(&html[start..end], "value")
-        })
-        .filter(|v| !v.is_empty())
-}
-
-/// The double-quoted value of attribute `name` inside one HTML tag.
-fn attr_value(tag: &str, name: &str) -> Option<String> {
-    let needle = format!("{name}=\"");
-    tag.match_indices(&needle).find_map(|(at, _)| {
-        // Must be a whole attribute name, not the tail of e.g. `data-value`.
-        if !tag[..at].ends_with(|c: char| c.is_ascii_whitespace()) {
-            return None;
-        }
-        let rest = &tag[at + needle.len()..];
-        rest.find('"').map(|len| rest[..len].to_string())
-    })
+/// The value of the `session` cookie set by a response, if any. A cleared
+/// cookie (`session=deleted` or empty) does not count.
+fn session_from_set_cookie(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next()?.trim().split_once('='))
+        .filter(|(name, value)| *name == "session" && !value.is_empty() && *value != "deleted")
+        .map(|(_, value)| value.to_string())
+        .next_back()
 }
 
 #[cfg(test)]
@@ -243,37 +208,34 @@ mod tests {
     use reqwest::StatusCode;
 
     #[test]
-    fn reads_a_named_cookie() {
-        let h = "site_lang=ua; session=abc.def; name=x";
-        assert_eq!(cookie_value(h, "session").as_deref(), Some("abc.def"));
-        assert_eq!(cookie_value(h, "missing"), None);
+    fn session_cookie_is_read_from_set_cookie_headers() {
+        use reqwest::header::HeaderValue;
+        let mut h = HeaderMap::new();
+        for v in [
+            "site_lang=ua; path=/",
+            "session=abc.DEF-123; path=/; secure; HttpOnly",
+            "name=%D0%94; path=/",
+        ] {
+            h.append(SET_COOKIE, HeaderValue::from_static(v));
+        }
+        assert_eq!(session_from_set_cookie(&h).as_deref(), Some("abc.DEF-123"));
+
+        let mut cleared = HeaderMap::new();
+        cleared.append(
+            SET_COOKIE,
+            HeaderValue::from_static("session=deleted; expires=Thu, 01 Jan 1970 00:00:01 GMT"),
+        );
+        cleared.append(SET_COOKIE, HeaderValue::from_static("session=; path=/"));
+        assert_eq!(session_from_set_cookie(&cleared), None);
+        assert_eq!(session_from_set_cookie(&HeaderMap::new()), None);
     }
 
     #[test]
-    fn finds_csrf_token_either_attribute_order() {
-        let a = r#"<input type="hidden" name="_csrf-landing" value="TOKEN123==">"#;
-        assert_eq!(extract_csrf(a).as_deref(), Some("TOKEN123=="));
-        let b = r#"<input value="ABC==" name="_csrf-landing">"#;
-        assert_eq!(extract_csrf(b).as_deref(), Some("ABC=="));
-        assert_eq!(extract_csrf("<p>no token here</p>"), None);
-    }
-
-    #[test]
-    fn csrf_ignores_other_tags_and_lookalike_attributes() {
-        let html = r#"<meta name="csrf-param" content="_csrf-landing">
-<meta name="csrf-token" content="META">
-<form><input type="hidden" data-value="WRONG"
-    name="_csrf-landing"
-    value="RIGHT=="></form>"#;
-        assert_eq!(extract_csrf(html).as_deref(), Some("RIGHT=="));
-        assert_eq!(
-            extract_csrf(r#"<input name="_csrf-landing" value="">"#),
-            None
-        );
-        assert_eq!(
-            extract_csrf(r#"<input name="_csrf-landing" value="unterminated>"#),
-            None
-        );
+    fn login_body_is_a_user_login_rpc() {
+        let body = rpc_body("userLogin", json!({ "login": "u", "pass": "p" }));
+        assert_eq!(body["data"]["action"], "userLogin");
+        assert_eq!(body["data"]["login"], "u");
+        assert_eq!(body["data"]["pass"], "p");
     }
 
     #[test]

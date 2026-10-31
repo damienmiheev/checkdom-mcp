@@ -38,6 +38,10 @@ All notable changes to this project are documented here. The format is based on
 - MCP: JSON-RPC batches, id and version checks; client responses are not answered; invalid
   UTF-8 and lines over 1 MiB get an error instead of stopping the server.
 
+### Fixed
+- Login uses the dashboard's `userLogin` RPC (verified live). Posting the HTML login form
+  never worked: `POST /login` is 301-redirected and loses its body.
+
 ### Security
 - Redirects are followed only to checkdom.in.ua, so a 307/308 can't replay the password.
 - The token file is written atomically and never through a symlink.
