@@ -46,6 +46,14 @@ linked docs; do not duplicate them here.
 - Tool names and input schemas are a public contract for MCP clients; changing one is a
   breaking change and goes in CHANGELOG.md.
 
+## Docs are always up to date
+
+Every change that affects behaviour updates, in the same PR: README.md (install, login,
+client setup, tool tables, known issues), SECURITY.md (anything security-relevant),
+docs/API.md (anything learned about the CheckDom API) and CHANGELOG.md. A test
+(`readme_tool_tables_match_the_server`) fails when the README tool tables and the server
+disagree; everything else is on you, so re-read the README before claiming done.
+
 ## Required checks before claiming done
 
 ```bash
@@ -67,7 +75,7 @@ Report actual results. If a check fails or was skipped, say so.
 | CLI (`login` / `logout` / `status` / `serve`) | src/main.rs |
 | MCP stdio loop (JSON-RPC 2.0) | src/mcp.rs |
 | Tool definitions, gating, argument validation | src/tools.rs |
-| HTTP client, login + CSRF, response parsing | src/client.rs |
+| HTTP client, login (`userLogin` RPC), response parsing | src/client.rs |
 | Token storage | src/config.rs |
 | End-to-end tests of the binary | tests/stdio.rs |
 | Release notes | CHANGELOG.md |

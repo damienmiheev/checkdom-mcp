@@ -62,6 +62,60 @@ fn serve(name: &str, extra_args: &[&str], requests: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Tool names in the README table that follows `heading`: first-column
+/// backticked names, up to the next blank line after the table.
+fn readme_tools(heading: &str) -> Vec<String> {
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    let start = readme
+        .find(heading)
+        .unwrap_or_else(|| panic!("README has no {heading:?}"));
+    readme[start..]
+        .lines()
+        .skip(1)
+        .skip_while(|l| !l.starts_with('|'))
+        .take_while(|l| l.starts_with('|'))
+        .filter_map(|l| l.strip_prefix("| `")?.split('`').next().map(str::to_string))
+        .collect()
+}
+
+#[test]
+fn readme_tool_tables_match_the_server() {
+    let read = serve(
+        "readme-r",
+        &[],
+        &[json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})],
+    );
+    let all = serve(
+        "readme-w",
+        &["--allow-writes"],
+        &[json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})],
+    );
+    let mut read_names = tool_names(&read[0]);
+    let mut write_names: Vec<String> = tool_names(&all[0])
+        .into_iter()
+        .filter(|n| !read_names.contains(n))
+        .collect();
+    let mut readme_read = readme_tools("**Read (always on):**");
+    let mut readme_write = readme_tools("**Write (only with `--allow-writes`):**");
+    for v in [
+        &mut read_names,
+        &mut write_names,
+        &mut readme_read,
+        &mut readme_write,
+    ] {
+        v.sort();
+    }
+    assert_eq!(
+        readme_read, read_names,
+        "README read-tool table is out of date"
+    );
+    assert_eq!(
+        readme_write, write_names,
+        "README write-tool table is out of date"
+    );
+}
+
 fn tool_names(reply: &Value) -> Vec<String> {
     reply["result"]["tools"]
         .as_array()
